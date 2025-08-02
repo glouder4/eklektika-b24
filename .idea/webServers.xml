@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="22d3942f-7d36-4c20-bd0e-800cbb8bf692" name="eklektika-beget-b24" url="https://b24.amiiya.ru">
+        <fileTransfer rootFolder="/home/g/glouder/eklektikab24/public_html" accessType="SFTP" host="glouder.beget.tech" port="22" sshConfigId="9c59501a-7214-4573-aacc-e483bee8a239" sshConfig="glouder_ftp@glouder.beget.tech:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
