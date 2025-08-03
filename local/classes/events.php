@@ -1,6 +1,8 @@
 <?php
     $eventManager = \Bitrix\Main\EventManager::getInstance();
 
+
+    // Создание/обновление статуса компании (отдельная сущность)
     $eventManager->addEventHandlerCompatible(
         'iblock',
         'OnAfterIBlockElementAdd',
@@ -13,12 +15,15 @@
         array('\OnlineService\Site\CompanyStatusUpdater', "updateElementEvent")
     );
 
+    // Обновление компании
     $eventManager->addEventHandlerCompatible(
         'crm',
         'OnAfterCrmCompanyUpdate',
         array('\OnlineService\Site\CompanyUpdater', "updateCompany")
     );
 
+
+    //Обновление контакта
     $eventManager->addEventHandlerCompatible(
         'crm',
         'OnAfterCrmContactUpdate',

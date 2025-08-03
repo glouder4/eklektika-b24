@@ -8,16 +8,17 @@
             // Логика для добавления элемента
         }
 
+        // Создание/Обновление статуса
         public static function updateElementEvent(&$arFields) {
             global $USER;
             if( $USER->IsAdmin() ){
                 $props = $arFields['PROPERTY_VALUES'];
-                $DISCOUNT_VALUE = array_shift($props['331'])['VALUE'];
+                //$PRICE_TYPE_ID = array_shift($props['333'])['VALUE'];
 
                 $params = [
                     'ACTION' => "UPDATE_GROUP",
                     'ID' => $arFields['ID'],
-                    'DISCOUNT_VALUE' => $DISCOUNT_VALUE,
+                    //'PRICE_TYPE_ID' => $PRICE_TYPE_ID,
                     'ACTIVE' => $arFields['ACTIVE'],
                     'NAME' => $arFields['NAME'],
                     'C_SORT' => $arFields['SORT']

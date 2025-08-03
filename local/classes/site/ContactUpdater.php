@@ -12,9 +12,11 @@
             $email = $arFields['FM']['EMAIL'][array_key_first($arFields['FM']['EMAIL'])]['VALUE'];
             $phone = $arFields['FM']['PHONE'][array_key_first($arFields['FM']['PHONE'])]['VALUE'];
             $bDate = $arFields['BIRTHDATE'];
+            $isMarketingAgent = $arFields['UF_CRM_1698752707853'];
 
             $params = [
                 'B24_ID' => $arFields['ID'],
+                'ACTIVE' => $isMarketingAgent,
                 'NAME' => $name,
                 'LAST_NAME' => $last_name,
                 'EMAIL' => $email,
@@ -23,6 +25,7 @@
                 'PERSONAL_BIRTHDAYPERSONAL_BIRTHDAY' => $bDate,
                 'UF_CITY' => $arFields['UF_CRM_3804624445810'],
                 'WORK_POSITION' => $post,
+                'UF_ADVERSTERING_AGENT' => $isMarketingAgent,
                 'ACTION' => 'UPDATE_CONTACT'
             ];
 
