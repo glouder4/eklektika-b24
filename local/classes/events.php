@@ -22,10 +22,22 @@
         array('\OnlineService\Site\CompanyUpdater', "updateCompany")
     );
 
+    $eventManager->addEventHandlerCompatible(
+        'crm',
+        'OnBeforeCrmCompanyDelete',
+        array('\OnlineService\Site\CompanyUpdater', "deleteCompany")
+    );
+
 
     //Обновление контакта
     $eventManager->addEventHandlerCompatible(
         'crm',
         'OnAfterCrmContactUpdate',
         array('\OnlineService\Site\ContactUpdater', "OnAfterCrmContactAdd")
+    );
+
+    $eventManager->addEventHandlerCompatible(
+        'crm',
+        'OnBeforeCrmContactDelete',
+        array('\OnlineService\Site\ContactUpdater', "OnBeforeCrmContactDelete")
     );

@@ -13,7 +13,6 @@
             global $USER;
             if( $USER->IsAdmin() ){
                 $props = $arFields['PROPERTY_VALUES'];
-                //$PRICE_TYPE_ID = array_shift($props['333'])['VALUE'];
 
                 $params = [
                     'ACTION' => "UPDATE_GROUP",

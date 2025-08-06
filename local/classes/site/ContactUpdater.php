@@ -33,4 +33,14 @@
             $updater = new self();
             $updater->sendRequest($params,false);
         }
+
+        public static function OnBeforeCrmContactDelete($id){
+            $params = [
+                'ID' => $id,
+                'ACTION' => 'DELETE_CONTACT'
+            ];
+
+            $updater = new self();
+            $res = $updater->sendRequest($params,true);
+        }
     }
