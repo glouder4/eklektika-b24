@@ -49,6 +49,9 @@
                 $IS_MARKETING_AGENT = $arFields['UF_CRM_1675675211485'];
                 $COMPANY_STATUS_ID = $arFields['UF_CRM_1754047803'];
 
+                $REQ_FILE_ID = $arFields['UF_CRM_1755002252732'];
+                $fileInfo = \CFile::GetFileArray($REQ_FILE_ID);
+
                 $contactIds = array_column($COMPANY_USERS, 'CONTACT_ID');
 
                 foreach ($contactIds as $contactId){
@@ -108,6 +111,7 @@
                             ? 31516
                             : false // или null, или ''
                     ],
+                    "OS_REQUSITES_FILE" => $fileInfo,
                     "ACTIVE" => ($company['UF_CRM_1675675211485'] === 'Y' || $company['UF_CRM_1675675211485'] === true || $company['UF_CRM_1675675211485'] === 1 || $company['UF_CRM_1675675211485'] === "1") ? "Y" : "N"
                 ];
 
@@ -130,5 +134,10 @@
             $res = $updater->sendRequest($params,false );
 
             return true;
+        }
+
+        public function updateCompanyElement($params){
+            pre($params);
+            die();
         }
     }

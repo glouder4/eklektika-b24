@@ -92,3 +92,62 @@ function pre($o) {
     </div>
     <?
 }
+
+/*======= Уведомления о смене статуса сделки ========*/
+\Bitrix\Main\Loader::includeModule('crm');
+\Bitrix\Main\EventManager::getInstance()->addEventHandlerCompatible(
+    'crm',
+    'OnBeforeCrmDealUpdate',
+    'ek_onBeforeDealUpdateNotify'
+);
+
+function ek_onBeforeDealUpdateNotify(&$arFields) {
+    if (!\Bitrix\Main\Loader::includeModule('crm')) return;
+
+    $dealId = isset($arFields['ID']) ? (int)$arFields['ID'] : 0;
+    if ($dealId <= 0) return;
+
+    // Новая стадия (если не передана, то стадия не меняется)
+    $newStage = isset($arFields['STAGE_ID']) ? (string)$arFields['STAGE_ID'] : '';
+    if ($newStage === '') return;
+
+    // Текущая стадия до обновления
+    $deal = \Bitrix\Crm\DealTable::getById($dealId)->fetch();
+    if (!$deal || !isset($deal['STAGE_ID'])) return;
+
+    $prevStage = (string)$deal['STAGE_ID'];
+    if ($prevStage === $newStage) return; // стадия не изменилась
+
+    // Условия уведомлений: на 10, на 9, на NEW с любого
+    $rawNew = (string)$newStage;
+    $suffixNew = (strpos($rawNew, ':') !== false) ? substr($rawNew, strrpos($rawNew, ':') + 1) : $rawNew;
+    $normalizedNew = strtoupper($suffixNew);
+    $shouldNotify = in_array($normalizedNew, ['10', '9'], true) || $normalizedNew === 'NEW';
+    if (!$shouldNotify) return;
+
+    // Кому отправлять: ответственному по сделке
+    $assignedId = isset($deal['ASSIGNED_BY_ID']) ? (int)$deal['ASSIGNED_BY_ID'] : 0;
+    if ($assignedId <= 0) return;
+
+    // Формируем сообщение
+    $title = isset($deal['TITLE']) ? (string)$deal['TITLE'] : ('Сделка #'.$dealId);
+    $url = \CCrmOwnerType::GetEntityShowPath(\CCrmOwnerType::Deal, $dealId);
+    $message = sprintf(
+        'Статус сделки "%s" изменён %s на %s. <a href="%s">Открыть</a>',
+        $title,
+        $prevStage !== '' ? ('с '.$prevStage) : 'на',
+        $newStage,
+        $url
+    );
+
+    if (\CModule::IncludeModule('im')) {
+        \CIMNotify::Add([
+            'TO_USER_ID' => $assignedId,
+            'NOTIFY_TYPE' => IM_NOTIFY_SYSTEM,
+            'NOTIFY_MODULE' => 'crm',
+            'NOTIFY_EVENT' => 'deal_status_changed',
+            'MESSAGE' => $message,
+            'TAG' => 'crm|deal|status|'.$dealId,
+        ]);
+    }
+}

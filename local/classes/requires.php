@@ -5,3 +5,5 @@
     require_once __DIR__ . '/site/ContactUpdater.php';
     require_once __DIR__.'/LocalApplicationHandler.php';
     require_once __DIR__ . '/events.php';
+    //require_once __DIR__ . '/DealExpiryHandler.php';
+    //require_once __DIR__ . '/DealExpiryAgent.php';

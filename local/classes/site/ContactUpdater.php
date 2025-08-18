@@ -41,6 +41,8 @@
             ];
 
             $updater = new self();
-            $res = $updater->sendRequest($params,true);
+            $res = $updater->sendRequest($params,false);
+            /*pre($res);
+            die();*/
         }
     }
