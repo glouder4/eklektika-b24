@@ -6,4 +6,33 @@ local/cron/CRON_SETUP.md
 /local/modules/kitconsulting.products
 /local/modules/kitconsulting.restevents
 bitrix/.settings.php
-bitrix/.settings.php
+
+# Системные файлы Битрикс
+/bitrix/backup/
+/bitrix/cache/
+/bitrix/managed_cache/
+/bitrix/stack_cache/
+/bitrix/html_pages/
+/bitrix/updates/
+/bitrix/tmp/
+/bitrix/error_log
+/bitrix/php_interface/dbconn.php
+/bitrix/.settings.php
+
+# Файлы загрузок
+/upload/
+/upload_tmp/
+
+# Логи и временные файлы
+/*.log
+/log.txt
+
+# Конфиги и настройки сервера
+/.htaccess
+/.env
+/local/config/
+
+# IDE и системные файлы
+/.idea/
+/.vscode/
+/.DS_Store
