@@ -78,7 +78,7 @@
                     pre("Raw response that failed to parse: " . $result);
                 }
                 return [
-                    'success' => 0,
+                    'success' => $httpCode === 200,
                     'error' => 'JSON Parse Error: ' . json_last_error_msg(),
                     'raw_response' => $result
                 ];

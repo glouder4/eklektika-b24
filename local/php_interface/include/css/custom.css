@@ -1,0 +1,15 @@
+.ui-entity-editor-content-block .fields.file img {
+    max-width: 150px;
+    max-height: 150px;
+}
+
+.ui-entity-editor-content-block .fields.file.field-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+}
+
+.ui-entity-editor-content-block .fields.file.field-wrap > * {
+    margin: 3px 5px;
+}

@@ -1,0 +1,20 @@
+<?php
+$MESS["CRM_PERMS_AUTOMATION_DISABLED_HELP"] = "Opsi ini tidak berlaku jika opsi \"Pengguna dapat mengedit pengaturan\" diaktifkan";
+$MESS["CRM_PERMS_BUTTONS_APPLY"] = "Terapkan";
+$MESS["CRM_PERMS_BUTTONS_SAVE"] = "Simpan";
+$MESS["CRM_PERMS_DLG_BTN"] = "Hapus";
+$MESS["CRM_PERMS_DLG_MESSAGE"] = "Anda yakin ingin menghapus ini?";
+$MESS["CRM_PERMS_DLG_TITLE"] = "Hapus peran";
+$MESS["CRM_PERMS_FILED_NAME"] = "Peran";
+$MESS["CRM_PERMS_HEAD_ADD"] = "Tambahkan";
+$MESS["CRM_PERMS_HEAD_AUTOMATION"] = "Automasi";
+$MESS["CRM_PERMS_HEAD_DELETE"] = "Hapus";
+$MESS["CRM_PERMS_HEAD_ENTITY"] = "Entitas";
+$MESS["CRM_PERMS_HEAD_EXPORT"] = "Ekspor";
+$MESS["CRM_PERMS_HEAD_IMPORT"] = "Impor";
+$MESS["CRM_PERMS_HEAD_READ"] = "Baca";
+$MESS["CRM_PERMS_HEAD_WRITE"] = "Perbarui";
+$MESS["CRM_PERMS_PERM_ADD"] = "Pengguna dapat mengedit pengaturan";
+$MESS["CRM_PERMS_PERM_INHERIT"] = "Warisi";
+$MESS["CRM_PERMS_RESTRICTION"] = "Untuk memberikan karyawan Anda izin akses CRM yang berbeda, tingkatkan ke <a target=\"_blank\" href=\"https://www.bitrix24.id/prices/\">salah satu paket komersial</a>.";
+$MESS["CRM_PERMS_ROLE_DELETE"] = "Hapus peran";

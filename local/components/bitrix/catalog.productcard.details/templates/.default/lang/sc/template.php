@@ -1,0 +1,8 @@
+<?php
+$MESS["CPD_FEEDBACK_BUTTON"] = "反馈";
+$MESS["CPD_NEW_PROPERTY_ADDED"] = "已添加属性";
+$MESS["CPD_NEW_VARIATION_ADDED"] = "已添加变体";
+$MESS["CPD_SETTING_DISABLED"] = "已禁用选项 \"#NAME#\"";
+$MESS["CPD_SETTING_ENABLED"] = "已启用选项 \"#NAME#\"";
+$MESS["CPD_TAB_BALANCE_TITLE"] = "库存";
+$MESS["CPD_TAB_GENERAL_TITLE"] = "共同";

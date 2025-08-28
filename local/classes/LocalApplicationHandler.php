@@ -1,6 +1,8 @@
 <?php
 namespace OnlineService;
 
+use OnlineService\Rest\RestCall;
+
 class LocalApplicationHandler{
     protected $B24;
     protected $request;
@@ -31,7 +33,14 @@ class LocalApplicationHandler{
 
 // Добавляем поиск по email
         if (!empty($fields['EMAIL'])) {
-            $filter['EMAIL'] = $fields['EMAIL'];
+            /* $emailFilter = [
+                'LOGIC' => 'OR',
+                'EMAIL' => $fields['EMAIL'],
+                'WORK_EMAIL' => $fields['EMAIL'],
+            ];
+
+            $filter[] = $emailFilter;*/
+            $filter['=EMAIL.VALUE'] = $fields['EMAIL'];
         }
 
 // Добавляем поиск по телефону
@@ -39,7 +48,7 @@ class LocalApplicationHandler{
             $normalizedPhone = normalizePhone($fields['PHONE']);
 
             // Создаем подмассив для телефонов
-            $phoneFilter = [
+            /* $phoneFilter = [
                 'LOGIC' => 'OR',
                 'PHONE' => $normalizedPhone,
                 'WORK_PHONE' => $normalizedPhone,
@@ -47,7 +56,9 @@ class LocalApplicationHandler{
             ];
 
             // Для D7 API нужно добавить как подмассив
-            $filter[] = $phoneFilter;
+            $filter[] = $phoneFilter;*/
+
+            $filter['=PHONE.VALUE'] = $normalizedPhone;
         }
 
         // Если нет критериев поиска
@@ -55,79 +66,40 @@ class LocalApplicationHandler{
             return [];
         }
 
+        //pre($filter);
+        $counter = 0;
+        $restRequest = new RestCall();
 
         try {
-            $contactResult = \CCrmContact::GetListEx(
-                ['ID' => 'DESC'],
-                $filter,
-                false,
-                ['nTopCount' => 1], // Берем только 1 контакт
-                []
-            );
+            $contactEmailResult = $restRequest->sendRequest([
+                'FILTER' => [
+                    'LOGIC' => 'OR',
+                    'EMAIL' => $fields['EMAIL'],
+                    //'PHONE' => '+'.normalizePhone($fields['PHONE']),
+                ],
+                'ORDER' => [
+                    'ID' => 'DESC',
+                ],
+                'SELECT' => ['ID','EMAIL','PHONE']
+            ],URL_B24.'rest/3032/2hyoqin6b0r3irzz/crm.contact.list.json',false);
 
-            if ($contact = $contactResult->Fetch()) {
-                // Сразу сохраняем ID контакта
-                $contactId = $contact['ID'];
+            $contactPhoneResult = $restRequest->sendRequest([
+                'FILTER' => [
+                    'LOGIC' => 'OR',
+                    //'EMAIL' => $fields['EMAIL'],
+                    'PHONE' => $fields['PHONE'],
+                ],
+                'ORDER' => [
+                    'ID' => 'DESC',
+                ],
+                'SELECT' => ['ID','EMAIL','PHONE']
+            ],URL_B24.'rest/3032/2hyoqin6b0r3irzz/crm.contact.list.json',false);
 
-                // Получаем мультиполя через D7 API
-                $multiFields = \Bitrix\Crm\FieldMultiTable::getList([
-                    'filter' => [
-                        '=ENTITY_ID' => \CCrmOwnerType::ContactName,
-                        '=ELEMENT_ID' => $contactId,
-                        '@TYPE_ID' => ['PHONE', 'EMAIL'] // Используем @ для IN-условия
-                    ]
-                ]);
-
-                $contactData = [
-                    'ID' => $contactId,
-                    'NAME' => $contact['NAME'],
-                    'LAST_NAME' => $contact['LAST_NAME'],
-                    'PHONES' => [],
-                    'EMAILS' => []
-                ];
-
-                // Обрабатываем мультиполя
-                while ($field = $multiFields->fetch()) { // Используем fetch() вместо Fetch()
-                    if ($field['TYPE_ID'] === 'PHONE') {
-                        $contactData['PHONES'][] = $field['VALUE'];
-                    } elseif ($field['TYPE_ID'] === 'EMAIL') {
-                        $contactData['EMAILS'][] = $field['VALUE'];
-                    }
-                }
-
-                // Проверяем соответствие критериям поиска
-                $matchesSearch = false;
-
-                // Проверка по ID (самая надежная)
-                if (!empty($fields['ID'])) {
-                    $matchesSearch = ($contactId == $fields['ID']);
-                }
-                // Проверка по email
-                elseif (!empty($fields['EMAIL'])) {
-                    $searchEmail = strtolower(trim($fields['EMAIL']));
-                    foreach ($contactData['EMAILS'] as $email) {
-                        if (strtolower(trim($email)) === $searchEmail) {
-                            $matchesSearch = true;
-                            break;
-                        }
-                    }
-                }
-                // Проверка по телефону
-                elseif (!empty($fields['PHONE'])) {
-                    $searchPhone = normalizePhone($fields['PHONE']);
-                    foreach ($contactData['PHONES'] as $phone) {
-                        if (normalizePhone($phone) === $searchPhone) {
-                            $matchesSearch = true;
-                            break;
-                        }
-                    }
-                }
-
-                return $matchesSearch ? $contactData : [];
+            if( isset($contactEmailResult['result']) && isset($contactPhoneResult['result']) ){
+                return array_merge($contactEmailResult['result'],$contactPhoneResult['result'])[0] ?? [];
             }
-
-            return [];
-        } catch (\Exception $e) {
+        }
+        catch (\Exception $e) {
             return [];
         }
     }
@@ -136,18 +108,18 @@ class LocalApplicationHandler{
     public function getResponse(){
         // Очищаем ACTION от возможных пробелов
         $action = trim($this->request['ACTION']);
-        
+
         if( in_array($action, $this->availableMethods) ){
             // Роутинг по типу запроса
             switch($action) {
                 case 'GET_CONTACT_ID':
                     return $this->handleGetContactId();
                     break;
-                
+
                 case 'DELETE_CONTACT':
                     return $this->handleDeleteContact();
                     break;
-                
+
                 default:
                     return [
                         'success' => false,
@@ -162,13 +134,13 @@ class LocalApplicationHandler{
             ];
         }
     }
-    
+
     /**
      * Обработчик запроса GET_CONTACT_ID
      */
     private function handleGetContactId() {
         $contact = $this->getContactByFields($this->request);
-        
+
         if ($contact) {
             return [
                 'success' => true,
@@ -185,7 +157,7 @@ class LocalApplicationHandler{
             ];
         }
     }
-    
+
     /**
      * Обработчик запроса DELETE_CONTACT
      * $this->request = [
@@ -199,19 +171,19 @@ class LocalApplicationHandler{
 
         if (\CCrmContact::Exists($this->request['ID'])) {
             $contactId = $this->request['ID'];
-            
+
             // Получаем информацию о контакте перед удалением
             $contactInfo = \CCrmContact::GetByID($contactId);
-            
+
             // Создаём объект контакта
             $contact = new \CCrmContact(false);
 
             // Сначала отвязываем от компании
             $arFields = ['COMPANY_ID' => 0];
-            
+
             try {
                 $updateResult = $contact->Update($contactId, $arFields);
-                
+
                 // Проверяем ошибки после Update
                 if ($contact->LAST_ERROR) {
                     return [
@@ -225,10 +197,10 @@ class LocalApplicationHandler{
                         ]
                     ];
                 }
-                
+
                 // Теперь пытаемся удалить контакт
                 $deleteResult = $contact->Delete($contactId);
-                
+
                 if ($deleteResult) {
                     return [
                         'success' => true,
@@ -250,7 +222,7 @@ class LocalApplicationHandler{
                         ]
                     ];
                 }
-                
+
             } catch (\Exception $e) {
                 return [
                     'success' => false,

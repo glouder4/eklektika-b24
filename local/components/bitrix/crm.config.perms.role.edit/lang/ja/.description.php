@@ -1,0 +1,6 @@
+<?
+$MESS["CRM_CONFIG_NAME"] = "設定";
+$MESS["CRM_NAME"] = "CRM";
+$MESS["CRM_PERMS_ROlE_EDIT_DESCRIPTION"] = "CRMロールの編集";
+$MESS["CRM_PERMS_ROlE_EDIT_NAME"] = "ロールの編集";
+?>

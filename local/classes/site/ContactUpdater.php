@@ -14,9 +14,12 @@
             $bDate = $arFields['BIRTHDATE'];
             $isMarketingAgent = $arFields['UF_CRM_1698752707853'];
 
+            $ASSIGNED_MANAGER = $arFields['ASSIGNED_BY_ID'];
+
             $params = [
                 'B24_ID' => $arFields['ID'],
                 'ACTIVE' => $isMarketingAgent,
+                'ASSIGNED_MANAGER' => $ASSIGNED_MANAGER,
                 'NAME' => $name,
                 'LAST_NAME' => $last_name,
                 'EMAIL' => $email,

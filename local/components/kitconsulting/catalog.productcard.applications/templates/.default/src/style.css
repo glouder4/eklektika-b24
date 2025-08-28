@@ -1,0 +1,19 @@
+.crm-entity-product-list-add-block {
+    background: #fff;
+    margin-bottom: 4px;
+    height: 57px;
+    padding: 0 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: var(--ui-border-radius-md);
+}
+
+.crm-entity-product-list-add-block-top.crm-entity-product-list-add-block-active ~ .crm-entity-total-wrapper {
+    border-top-right-radius: 0;
+    border-top-left-radius: 0;
+}
+
+.crm-entity-product-list-add-block-top.crm-entity-product-list-add-block-active ~ .main-grid {
+    --main-grid-bottom-border-radius: 0;
+}

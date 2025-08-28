@@ -1,0 +1,8 @@
+<?php
+$MESS["CPD_FEEDBACK_BUTTON"] = "回饋意見";
+$MESS["CPD_NEW_PROPERTY_ADDED"] = "已經新增屬性";
+$MESS["CPD_NEW_VARIATION_ADDED"] = "已經新增變數";
+$MESS["CPD_SETTING_DISABLED"] = "已停用選項 \"#NAME#\"";
+$MESS["CPD_SETTING_ENABLED"] = "已啟用選項 \"#NAME#\"";
+$MESS["CPD_TAB_BALANCE_TITLE"] = "庫存";
+$MESS["CPD_TAB_GENERAL_TITLE"] = "通用";

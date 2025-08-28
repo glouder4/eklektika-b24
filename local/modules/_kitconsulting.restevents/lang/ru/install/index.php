@@ -1,0 +1,5 @@
+<?php
+$MESS['RESTEVENTS_HELPERS_MODULE_NAME'] = "Rest Events";
+$MESS['RESTEVENTS_HELPERS_MODULE_DESCRIPTION'] = "Rest Events";
+$MESS['RESTEVENTS_HELPERS_PARTNER_NAME'] = "КИТ Консалтинг";
+$MESS['RESTEVENTS_HELPERS_PARTNER_URI'] = "https://kit-consulting.ru";

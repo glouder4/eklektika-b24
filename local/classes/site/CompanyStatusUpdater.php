@@ -25,7 +25,8 @@
 
                 // Создаем временный экземпляр только для отправки запроса
                 $updater = new self();
-                $res = $updater->sendRequest($params);
+                $res = $updater->sendRequest($params,false);
             }
+
         }
     }

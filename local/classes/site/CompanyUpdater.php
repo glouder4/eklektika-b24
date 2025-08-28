@@ -47,9 +47,9 @@
 
                 $COMPANY_USERS = $arFields['CONTACT_BINDINGS'];
                 $IS_MARKETING_AGENT = $arFields['UF_CRM_1675675211485'];
-                $COMPANY_STATUS_ID = $arFields['UF_CRM_1754047803'];
+                $COMPANY_STATUS_ID = $arFields['UF_CRM_1755690874'];
 
-                $REQ_FILE_ID = $arFields['UF_CRM_1755002252732'];
+                $REQ_FILE_ID = $arFields['UF_CRM_1755643990423'];
                 $fileInfo = \CFile::GetFileArray($REQ_FILE_ID);
 
                 $contactIds = array_column($COMPANY_USERS, 'CONTACT_ID');
@@ -93,7 +93,7 @@
                     'CONTACT_IDS' => $contactIds,
                     "OS_COMPANY_B24_ID" => $companyId,
                     "OS_COMPANY_NAME" => $company['TITLE'],
-                    "OS_COMPANY_STATUS" => $arFields['UF_CRM_1754047803'],
+                    "OS_COMPANY_STATUS" => $arFields['UF_CRM_1755690874'],
                     "OS_COMPANY_USERS" => $contactIds,
                     "OS_COMPANY_INN" => $company['REQUISITES']['RQ_INN'],
                     "OS_COMPANY_CITY" => $arFields['UF_CRM_1618551330657'],
@@ -103,12 +103,12 @@
                     "OS_COMPANY_STATUS" => $COMPANY_STATUS_ID,
                     'OS_IS_MARKETING_AGENT' => [
                         'VALUE' => ($IS_MARKETING_AGENT === 'Y' || $IS_MARKETING_AGENT === true || $IS_MARKETING_AGENT === 1 || $IS_MARKETING_AGENT === "1")
-                            ? 31517
+                            ? 31519
                             : false // или null, или ''
                     ],
                     'OS_IS_COMPANY_DISABLED' => [
                         'VALUE' => ($arFields['UF_CRM_1681120791520'] === 'Y' || $arFields['UF_CRM_1681120791520'] === true || $arFields['UF_CRM_1681120791520'] === 1 || $arFields['UF_CRM_1681120791520'] === "1")
-                            ? 31516
+                            ? 31518
                             : false // или null, или ''
                     ],
                     "OS_REQUSITES_FILE" => $fileInfo,

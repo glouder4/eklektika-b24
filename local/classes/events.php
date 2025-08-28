@@ -41,3 +41,10 @@
         'OnBeforeCrmContactDelete',
         array('\OnlineService\Site\ContactUpdater', "OnBeforeCrmContactDelete")
     );
+
+    //Обновление сотрудника(менеджера)
+    $eventManager->addEventHandlerCompatible(
+        'main',
+        'OnAfterUserUpdate',
+        array('\OnlineService\Site\ManagerUpdater', "OnAfterUserUpdate")
+    );
