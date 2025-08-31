@@ -9,8 +9,8 @@
           </advancedOptions>
         </fileTransfer>
       </webServer>
-      <webServer id="270b1258-600d-4bca-9b20-af1a093efc7b" name="eklektika-b24-ssh" url="https://testb24.yoliba.ru/">
-        <fileTransfer rootFolder="/home/bitrix/ext_www/testb24.yoliba.ru" accessType="SFTP" host="192.168.1.94" port="22" sshConfigId="8868ae6a-f8a5-478a-bf51-60629ef75052" sshConfig="root@192.168.1.94:22 password">
+      <webServer id="270b1258-600d-4bca-9b20-af1a093efc7b" name="eklektika-b24-ssh" url="https://bitrix.yomerch.ru/">
+        <fileTransfer rootFolder="/home/bitrix/ext_www/bitrix.yomerch.ru" accessType="SFTP" host="192.168.1.95" port="22" sshConfigId="8868ae6a-f8a5-478a-bf51-60629ef75052" sshConfig="root@192.168.1.95:22 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>

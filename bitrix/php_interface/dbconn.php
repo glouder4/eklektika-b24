@@ -1,16 +1,18 @@
-<?define("BX_CRONTAB_SUPPORT", true);?><?define("BX_CRONTAB_SUPPORT", true);?><?define("BX_CRONTAB_SUPPORT", true);?><?define("BX_CRONTAB_SUPPORT", true);?><?
+<?php
+define('BX_CRONTAB_SUPPORT', true);
+
 define("DBPersistent", false);
 define("BX_USE_MYSQLI", true);
 define("DBPersistent", false);
 $DBType = "mysql";
 $DBHost = "localhost";
-$DBLogin = "glouder_ekl_b24";
-$DBPassword = "p*lu%3BrVsKy";
-$DBName = "glouder_ekl_b24";
+$DBLogin = "yobitrixusr";
+$DBPassword = "4W-NmEhQH.vI0p64etPz";
+$DBName = "dbbitrixyo";
 $DBDebug = true;
 $DBDebugToFile = false;
 
-@ini_set("memory_limit", "2048M");
+@ini_set("memory_limit", "1024M");
 define("DELAY_DB_CONNECT", true);
 define("CACHED_b_file", 3600);
 define("CACHED_b_file_bucket_size", 10);

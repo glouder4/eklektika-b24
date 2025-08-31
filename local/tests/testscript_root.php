@@ -1,6 +1,6 @@
 <?php
 $DOCUMENT_ROOT = realpath(__DIR__ . '/..');
-$_SERVER['DOCUMENT_ROOT'] = '/home/bitrix/ext_www/testb24.yoliba.ru';
+$_SERVER['DOCUMENT_ROOT'] = '/home/bitrix/ext_www/bitrix.yomerch.ru';
 
 ini_set('error_reporting', E_ALL);
 ini_set('display_errors', 1);

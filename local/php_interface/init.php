@@ -3,8 +3,8 @@
 	//ini_set('max_execution_time', 300);
     require_once __DIR__.'/../classes/requires.php'; // Подключение кастомных обработчиков
 
-    define('EKLEKTIKA_SITE_URL', 'https://test.yoliba.ru/');
-	define('URL_B24', 'https://testb24.yoliba.ru/');
+    define('EKLEKTIKA_SITE_URL', 'https://yomerch.ru/');
+	define('URL_B24', 'https://bitrix.yomerch.ru/');
 	
 
 
