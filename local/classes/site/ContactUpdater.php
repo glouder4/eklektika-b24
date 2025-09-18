@@ -9,17 +9,21 @@
             $name = $arFields['NAME'];
             $last_name = $arFields['LAST_NAME'];
             $post = $arFields['POST'];
-            $email = $arFields['FM']['EMAIL'][array_key_first($arFields['FM']['EMAIL'])]['VALUE'];
-            $phone = $arFields['FM']['PHONE'][array_key_first($arFields['FM']['PHONE'])]['VALUE'];
+            $email = (!is_null($arFields['FM']['EMAIL'])) ? $arFields['FM']['EMAIL'][array_key_first($arFields['FM']['EMAIL'])]['VALUE'] : "";
+            $phone = ( !is_null($arFields['FM']['PHONE']) ) ? $arFields['FM']['PHONE'][array_key_first($arFields['FM']['PHONE'])]['VALUE'] : "";
             $bDate = $arFields['BIRTHDATE'];
             $isMarketingAgent = $arFields['UF_CRM_1698752707853'];
+            $isDirector = $arFields['UF_CRM_1712732096274'];
 
             $ASSIGNED_MANAGER = $arFields['ASSIGNED_BY_ID'];
+            $SECOND_MANAGER_ID = $arFields['UF_CRM_1757682312'] ?? false;
 
             $params = [
                 'B24_ID' => $arFields['ID'],
                 'ACTIVE' => $isMarketingAgent,
                 'ASSIGNED_MANAGER' => $ASSIGNED_MANAGER,
+                'SECOND_MANAGER' => $SECOND_MANAGER_ID,
+                'UF_IS_DIRECTOR' => $isDirector == "Y",
                 'NAME' => $name,
                 'LAST_NAME' => $last_name,
                 'EMAIL' => $email,

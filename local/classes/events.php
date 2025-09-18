@@ -18,6 +18,11 @@
     // Обновление компании
     $eventManager->addEventHandlerCompatible(
         'crm',
+        'OnBeforeCrmCompanyUpdate',
+        array('\OnlineService\Site\CompanyUpdater', "beforeUpdateCompany")
+    );
+    $eventManager->addEventHandlerCompatible(
+        'crm',
         'OnAfterCrmCompanyUpdate',
         array('\OnlineService\Site\CompanyUpdater', "updateCompany")
     );

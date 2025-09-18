@@ -21,11 +21,11 @@
                 $params = [
                     'ACTION' => 'UPDATE_MANAGER',
                     'ID' => $arFields['ID'],
-                    'NAME' => $arFields['NAME'],
-                    'LAST_NAME' => $arFields['LAST_NAME'],
-                    'EMAIL' => $arFields['EMAIL'],
-                    'PHONE' => $arFields['WORK_PHONE'],
-                    'POSITION' => $arFields['WORK_POSITION'],
+                    'NAME' => $user['NAME'],
+                    'LAST_NAME' => $user['LAST_NAME'],
+                    'EMAIL' => $user['EMAIL'],
+                    'PHONE' => (!empty($user['WORK_PHONE']) && $user['WORK_PHONE'] != "") ? $user['WORK_PHONE'] : $user['PERSONAL_PHONE'],
+                    'POSITION' => $user['WORK_POSITION'],
                     'PERSONAL_PHOTO' => $arFields['PERSONAL_PHOTO']
                 ];
 
