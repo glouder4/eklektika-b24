@@ -197,7 +197,8 @@
                 ];
 
                 $updater = new self();
-                $res = $updater->sendRequest($companyParams,false);
+                $res = $updater->sendRequest($companyParams,true);
+                die();
 
                 return true;
             }
