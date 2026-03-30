@@ -5,7 +5,6 @@
 
     define('EKLEKTIKA_SITE_URL', 'https://yomerch.ru/');
 	define('URL_B24', 'https://bitrix.yomerch.ru/');
-	
 
 
 

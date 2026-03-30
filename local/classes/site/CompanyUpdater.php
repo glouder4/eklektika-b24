@@ -178,6 +178,7 @@
                     "OS_COMPANY_USERS" => $contactIds,
                     "OS_COMPANY_INN" => $company['REQUISITES']['RQ_INN'],
                     "OS_COMPANY_CITY" => $arFields['UF_CRM_1618551330657'],
+                    "OS_COMPANY_DISCOUNT_VALUE" => $arFields['UF_CRM_1771490556028'],
                     "OS_COMPANY_WEB_SITE" => $company['MULTIFIELDS']['WEB']['VALUE'],
                     "OS_COMPANY_PHONE" => $company['MULTIFIELDS']['PHONE']['VALUE'],
                     "OS_COMPANY_EMAIL" => $company['MULTIFIELDS']['EMAIL']['VALUE'],
@@ -197,8 +198,7 @@
                 ];
 
                 $updater = new self();
-                $res = $updater->sendRequest($companyParams,true);
-                die();
+                $res = $updater->sendRequest($companyParams,false);
 
                 return true;
             }

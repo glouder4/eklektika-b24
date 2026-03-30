@@ -37,3 +37,5 @@ bitrix/.settings.php
 /.vscode/
 /.DS_Store
 bitrix/.settings.php
+/bitrix
+/desktop_app

@@ -119,6 +119,9 @@ class LocalApplicationHandler{
                 case 'DELETE_CONTACT':
                     return $this->handleDeleteContact();
                     break;
+                case 'CREATED_EMPLOYEE':
+                    return $this->handleAddContact();
+                    break;
 
                 default:
                     return [
@@ -241,5 +244,9 @@ class LocalApplicationHandler{
                 'data' => 'Контакт не существует'
             ];
         }
+    }
+
+    private function handleAddContact(){
+
     }
 }

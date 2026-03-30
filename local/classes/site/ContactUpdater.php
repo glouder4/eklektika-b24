@@ -52,4 +52,9 @@
             /*pre($res);
             die();*/
         }
+
+        public function createContact($data){
+            pre($data);
+            die();
+        }
     }
