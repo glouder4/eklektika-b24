@@ -1,7 +1,8 @@
 Options -Indexes 
 ErrorDocument 404 /404.php
 
-php_value default_socket_timeout 60
+#php_value session.gc_maxlifetime 10800
+#php_value session.cookie_lifetime 10800
 
 <IfModule mod_rewrite.c>
 	Options +FollowSymLinks

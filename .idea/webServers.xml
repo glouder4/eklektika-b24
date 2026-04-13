@@ -3,7 +3,7 @@
   <component name="WebServers">
     <option name="servers">
       <webServer id="22d3942f-7d36-4c20-bd0e-800cbb8bf692" name="eklektika-beget-b24" url="https://b24.amiiya.ru">
-        <fileTransfer rootFolder="/home/g/glouder/eklektikab24/public_html" accessType="SFTP" host="glouder.beget.tech" port="22" sshConfigId="9c59501a-7214-4573-aacc-e483bee8a239" sshConfig="glouder_ftp@glouder.beget.tech:22 password">
+        <fileTransfer rootFolder="/home/g/glouder/eklektikab24/public_html" accessType="SFTP" host="glouder.beget.tech" port="22" sshConfigId="1f230c9b-035a-4908-abd9-836fa35aec5c" sshConfig="glouder_ftp@glouder.beget.tech:22 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>
@@ -11,6 +11,13 @@
       </webServer>
       <webServer id="270b1258-600d-4bca-9b20-af1a093efc7b" name="eklektika-b24-ssh" url="https://bitrix.yomerch.ru/">
         <fileTransfer rootFolder="/home/bitrix/ext_www/bitrix.yomerch.ru" accessType="SFTP" host="192.168.1.95" port="22" sshConfigId="8868ae6a-f8a5-478a-bf51-60629ef75052" sshConfig="root@192.168.1.95:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="779949e7-66dd-47f7-b548-4f6a104ab6eb" name="eklektika-test" url="https://testbitrix.yomerch.ru">
+        <fileTransfer rootFolder="/home/bitrix/ext_www/testbitrix.yomerch.ru" accessType="SFTP" host="192.168.1.96" port="22" sshConfigId="2b34c93c-d89c-453f-a56f-d780436fb95e" sshConfig="root@192.168.1.96:22 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>

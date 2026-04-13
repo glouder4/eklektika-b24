@@ -27,6 +27,6 @@ define("CACHED_menu", 3600);
 define("BX_UTF", true);
 define("BX_FILE_PERMISSIONS", 0664);
 define("BX_DIR_PERMISSIONS", 0775);
-@umask(~BX_DIR_PERMISSIONS);
+//@umask(~BX_DIR_PERMISSIONS);
 define("BX_DISABLE_INDEX_PAGE", true);
 ?>

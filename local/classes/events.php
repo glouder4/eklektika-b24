@@ -15,6 +15,13 @@
         array('\OnlineService\Site\CompanyStatusUpdater', "updateElementEvent")
     );
 
+    // Создание компании
+    $eventManager->addEventHandlerCompatible(
+        'crm',
+        'OnBeforeCrmCompanyAdd',
+        array('\OnlineService\Site\CompanyUpdater', "beforeAddCompany")
+    );
+
     // Обновление компании
     $eventManager->addEventHandlerCompatible(
         'crm',
