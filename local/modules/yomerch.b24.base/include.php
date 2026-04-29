@@ -7,4 +7,5 @@ Loader::registerAutoLoadClasses(null, [
     \OnlineService\LocalApplicationHandler::class => '/local/modules/yomerch.b24.base/lib/LocalApplicationHandler.php',
     \OnlineService\Rest\RestCall::class => '/local/modules/yomerch.b24.base/lib/RestCall.php',
     \OnlineService\SyncTraceContext::class => '/local/modules/yomerch.b24.base/lib/SyncTraceContext.php',
+    \OnlineService\Sync\SiteConnectorLocalSettings::class => '/local/modules/yomerch.b24.base/lib/Sync/SiteConnectorLocalSettings.php',
 ]);

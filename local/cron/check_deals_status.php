@@ -108,7 +108,12 @@ class DealStatusChecker
             return $this->toBool(\YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH);
         }
 
-        return $this->toBool(\getenv('YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH'));
+        $settings = \OnlineService\Sync\SiteConnectorLocalSettings::load();
+        if (!empty($settings['deals_fallback_on_mismatch'])) {
+            return $this->toBool($settings['deals_fallback_on_mismatch']);
+        }
+
+        return false;
     }
 
     private function isLegacyFallbackOnErrorEnabled(): bool

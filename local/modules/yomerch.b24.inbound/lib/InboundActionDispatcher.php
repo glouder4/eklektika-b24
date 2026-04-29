@@ -33,6 +33,7 @@ class InboundActionDispatcher
                 'success' => 0,
                 'error' => 'Invalid payload: ACTION is required',
                 'error_code' => 'invalid_payload',
+                'reason_code' => 'action_required',
                 'http_status' => 400,
             ];
         }
@@ -42,6 +43,7 @@ class InboundActionDispatcher
                 'success' => 0,
                 'error' => 'Unknown ACTION: ' . $action,
                 'error_code' => 'unknown_action',
+                'reason_code' => 'unsupported_action',
                 'http_status' => 400,
             ];
         }

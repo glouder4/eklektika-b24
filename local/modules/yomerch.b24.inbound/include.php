@@ -7,4 +7,6 @@ Loader::registerAutoLoadClasses(null, [
     \OnlineService\Sync\FromSite\InboundEndpoint::class => '/local/modules/yomerch.b24.inbound/lib/InboundEndpoint.php',
     \OnlineService\Sync\FromSite\InboundActionDispatcher::class => '/local/modules/yomerch.b24.inbound/lib/InboundActionDispatcher.php',
     \OnlineService\Sync\FromSite\InboundPayloadNormalizer::class => '/local/modules/yomerch.b24.inbound/lib/InboundPayloadNormalizer.php',
+    \OnlineService\Sync\FromSite\InboundSecurity::class => '/local/modules/yomerch.b24.inbound/lib/InboundSecurity.php',
+    \OnlineService\Sync\FromSite\InboundDedupStore::class => '/local/modules/yomerch.b24.inbound/lib/InboundDedupStore.php',
 ]);

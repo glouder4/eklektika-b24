@@ -78,6 +78,14 @@ class ContactSync extends OutboundRequest
                 . '; result='
                 . json_encode($response, JSON_UNESCAPED_UNICODE)
             );
+            self::writeOutboundTrace('ContactSync::delete_contact.failed', [
+                'contact_id' => $contactId,
+                'http_status' => (int)($response['http_status'] ?? 0),
+                'error_code' => (string)($response['error_code'] ?? ''),
+                'reason_code' => (string)($response['reason_code'] ?? ''),
+                'retryable' => !empty($response['retryable']),
+                'outcome' => (string)($response['outcome'] ?? ''),
+            ]);
         }
 
         // Fail-open: не блокируем удаление в CRM при временной недоступности сайта.
@@ -183,6 +191,16 @@ class ContactSync extends OutboundRequest
 
         $sync = new self();
         $response = $sync->sendRequest($params, false);
+        if ((int)($response['success'] ?? 0) !== 1) {
+            self::writeOutboundTrace('ContactSync::update_contact.failed', [
+                'contact_id' => $contactId,
+                'http_status' => (int)($response['http_status'] ?? 0),
+                'error_code' => (string)($response['error_code'] ?? ''),
+                'reason_code' => (string)($response['reason_code'] ?? ''),
+                'retryable' => !empty($response['retryable']),
+                'outcome' => (string)($response['outcome'] ?? ''),
+            ]);
+        }
     }
 
     private static function resolvePrimaryCompanyB24Id(int $contactId): int

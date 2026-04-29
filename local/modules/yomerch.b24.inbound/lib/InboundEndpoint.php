@@ -155,13 +155,21 @@ class InboundEndpoint
         }
 
         $ufCompanySiteElementId = self::uf('company.site_element_id');
+        $ufCompanySiteElementIdLegacy = self::uf('company.site_element_id_legacy_alias');
         $ufCompanyCity = self::uf('company.city');
-        $siteElementId = (string)($request[$ufCompanySiteElementId] ?? $request['SITE_ELEMENT_ID'] ?? '');
+        $siteElementId = (string)(
+            $request[$ufCompanySiteElementId]
+            ?? $request[$ufCompanySiteElementIdLegacy]
+            ?? $request['SITE_ELEMENT_ID']
+            ?? ''
+        );
         $siteElementId = trim($siteElementId);
-        if ($siteElementId === '') {
+        if ($siteElementId === '' || $siteElementId === '0') {
             return [
                 'success' => 0,
-                'error' => $ufCompanySiteElementId . ' is required',
+                'error' => $ufCompanySiteElementId . ', '
+                    . $ufCompanySiteElementIdLegacy
+                    . ' or SITE_ELEMENT_ID must be a non-empty site element id (not 0)',
             ];
         }
 
@@ -169,7 +177,7 @@ class InboundEndpoint
         if (count($matchedCompanyIds) !== 1) {
             return [
                 'success' => 0,
-                'error' => 'Company must be matched by ' . $ufCompanySiteElementId . ' uniquely',
+                'error' => 'Company must be matched by site_element_id UF (canonical or legacy) uniquely',
                 'matched_ids' => $matchedCompanyIds,
             ];
         }
@@ -182,8 +190,12 @@ class InboundEndpoint
         if (array_key_exists('LEGAN_ENTITY_CITY', $request)) {
             $fields[$ufCompanyCity] = (string)$request['LEGAN_ENTITY_CITY'];
         }
-        if (array_key_exists($ufCompanySiteElementId, $request)) {
+        if (
+            array_key_exists($ufCompanySiteElementId, $request)
+            || array_key_exists($ufCompanySiteElementIdLegacy, $request)
+        ) {
             $fields[$ufCompanySiteElementId] = $siteElementId;
+            $fields[$ufCompanySiteElementIdLegacy] = $siteElementId;
         }
 
         if (array_key_exists('LEGAN_ENTITY_PHONE', $request) && trim((string)$request['LEGAN_ENTITY_PHONE']) !== '') {
@@ -269,12 +281,14 @@ class InboundEndpoint
                     return [
                         'success' => 0,
                         'error' => 'Unsupported CRM METHOD: ' . $method,
+                        'reason_code' => 'unsupported_crm_method',
                     ];
             }
         } catch (\Throwable $e) {
             return [
                 'success' => 0,
                 'error' => $e->getMessage(),
+                'reason_code' => 'crm_method_exception',
             ];
         }
     }
@@ -539,20 +553,35 @@ class InboundEndpoint
 
     private static function findCompanyIdsBySiteElementId(string $siteElementId): array
     {
+        $canonical = self::uf('company.site_element_id');
+        $legacy = self::uf('company.site_element_id_legacy_alias');
+        $merged = array_merge(
+            self::collectCompanyIdsMatchingUf($canonical, $siteElementId),
+            self::collectCompanyIdsMatchingUf($legacy, $siteElementId),
+        );
+
+        return array_values(array_unique($merged));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function collectCompanyIdsMatchingUf(string $ufField, string $siteElementId): array
+    {
         $res = \CCrmCompany::GetListEx(
             ['ID' => 'ASC'],
             [
-                '=' . self::uf('company.site_element_id') => $siteElementId,
+                '=' . $ufField => $siteElementId,
                 'CHECK_PERMISSIONS' => 'N',
             ],
             false,
             false,
-            ['ID', self::uf('company.site_element_id')]
+            ['ID', $ufField],
         );
 
         $ids = [];
         while ($row = $res->Fetch()) {
-            if ((string)($row[self::uf('company.site_element_id')] ?? '') !== $siteElementId) {
+            if ((string)($row[$ufField] ?? '') !== $siteElementId) {
                 continue;
             }
             $id = (int)($row['ID'] ?? 0);
@@ -561,7 +590,7 @@ class InboundEndpoint
             }
         }
 
-        return array_values(array_unique($ids));
+        return $ids;
     }
 
     private static function findContactIdsByEmail(string $email): array

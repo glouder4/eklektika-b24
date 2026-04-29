@@ -163,7 +163,12 @@ class DealExpiryAgent
             return self::toBool(\YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH);
         }
 
-        return self::toBool(\getenv('YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH'));
+        $settings = \OnlineService\Sync\SiteConnectorLocalSettings::load();
+        if (!empty($settings['deals_fallback_on_mismatch'])) {
+            return self::toBool($settings['deals_fallback_on_mismatch']);
+        }
+
+        return false;
     }
 
     private static function toBool($value): bool

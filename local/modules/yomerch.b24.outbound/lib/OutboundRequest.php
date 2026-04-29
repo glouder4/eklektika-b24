@@ -4,6 +4,12 @@ namespace OnlineService\Sync\ToSite;
 
 class OutboundRequest
 {
+    private const TRANSPORT_ERROR_CODES = [
+        'transport_curl_error',
+        'transport_http_error',
+        'transport_json_error',
+    ];
+
     /**
      * @param mixed $raw
      * @return list<int>
@@ -309,13 +315,25 @@ class OutboundRequest
                 'success' => 0,
                 'error' => 'CURL Error: ' . $curlError,
                 'errno' => $curlErrno,
+                'error_code' => 'transport_curl_error',
+                'http_status' => 0,
+                'retryable' => true,
             ];
         }
 
         if ($httpCode !== 200) {
+            $decodedError = \json_decode((string)$result, true);
+            $errorCode = '';
+            $reasonCode = '';
+            if (\is_array($decodedError)) {
+                $errorCode = (string)($decodedError['error_code'] ?? '');
+                $reasonCode = (string)($decodedError['reason_code'] ?? '');
+            }
             self::writeOutboundTrace('sendRequest http_not_200', [
                 'action' => (string)($params['ACTION'] ?? ''),
                 'http_code' => $httpCode,
+                'error_code' => $errorCode,
+                'reason_code' => $reasonCode,
                 'body_head' => self::truncateLog((string) $result, 800),
             ]);
             if ($debug) {
@@ -325,6 +343,10 @@ class OutboundRequest
             return [
                 'success' => 0,
                 'error' => 'HTTP Error: ' . $httpCode,
+                'error_code' => $errorCode !== '' ? $errorCode : 'transport_http_error',
+                'reason_code' => $reasonCode,
+                'http_status' => $httpCode,
+                'retryable' => \in_array((int)$httpCode, $retryCodes, true),
                 'response' => $result,
             ];
         }
@@ -344,6 +366,9 @@ class OutboundRequest
             return [
                 'success' => 0,
                 'error' => 'JSON Parse Error: ' . json_last_error_msg(),
+                'error_code' => 'transport_json_error',
+                'http_status' => $httpCode,
+                'retryable' => false,
                 'raw_response' => $result,
             ];
         }
@@ -356,10 +381,16 @@ class OutboundRequest
             ];
         }
 
+        $decodedResult = self::normalizeContractOutcome($decodedResult, $httpCode);
+
         self::writeOutboundTrace('sendRequest ok', [
             'action' => (string)($params['ACTION'] ?? ''),
             'success' => $decodedResult['success'] ?? null,
             'error' => $decodedResult['error'] ?? null,
+            'error_code' => $decodedResult['error_code'] ?? null,
+            'reason_code' => $decodedResult['reason_code'] ?? null,
+            'http_status' => $decodedResult['http_status'] ?? null,
+            'retryable' => $decodedResult['retryable'] ?? null,
             'has_debug_trace' => isset($decodedResult['debug_trace']),
         ]);
 
@@ -370,5 +401,38 @@ class OutboundRequest
         }
 
         return $decodedResult;
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @return array<string, mixed>
+     */
+    protected static function normalizeContractOutcome(array $response, int $httpCode): array
+    {
+        if (!isset($response['http_status']) || (int)$response['http_status'] <= 0) {
+            $response['http_status'] = $httpCode > 0 ? $httpCode : 200;
+        } else {
+            $response['http_status'] = (int)$response['http_status'];
+        }
+        $response['success'] = (int)($response['success'] ?? 0);
+        $response['error_code'] = (string)($response['error_code'] ?? '');
+        $response['reason_code'] = (string)($response['reason_code'] ?? '');
+        if (!isset($response['error'])) {
+            $response['error'] = '';
+        }
+
+        $transportOk = $response['http_status'] === 200;
+        $domainOk = $response['success'] === 1;
+        $isTransportError = !$transportOk || \in_array($response['error_code'], self::TRANSPORT_ERROR_CODES, true);
+        if (!isset($response['retryable'])) {
+            $response['retryable'] = $isTransportError && \in_array((int)$response['http_status'], [0, 429, 503], true);
+        } else {
+            $response['retryable'] = (bool)$response['retryable'];
+        }
+        $response['outcome'] = $isTransportError ? 'transport_error' : ($domainOk ? 'domain_success' : 'domain_failure');
+        $response['transport_ok'] = $transportOk ? 1 : 0;
+        $response['domain_ok'] = $domainOk ? 1 : 0;
+
+        return $response;
     }
 }

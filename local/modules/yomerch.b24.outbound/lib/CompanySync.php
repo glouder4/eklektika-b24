@@ -353,6 +353,14 @@ class CompanySync extends OutboundRequest
             $sync = new self();
             $updateCompanyResult = $sync->sendRequest($params, false);
             if ((int)($updateCompanyResult['success'] ?? 0) !== 1 || !empty($updateCompanyResult['error'])) {
+                self::writeOutboundTrace('CompanySync::update_company.failed', [
+                    'company_id' => $companyId,
+                    'http_status' => (int)($updateCompanyResult['http_status'] ?? 0),
+                    'error_code' => (string)($updateCompanyResult['error_code'] ?? ''),
+                    'reason_code' => (string)($updateCompanyResult['reason_code'] ?? ''),
+                    'retryable' => !empty($updateCompanyResult['retryable']),
+                    'outcome' => (string)($updateCompanyResult['outcome'] ?? ''),
+                ]);
                 error_log(
                     '[CompanySync::onAfterCompanyUpdate] UPDATE_COMPANY sync failed for company '
                     . $companyId

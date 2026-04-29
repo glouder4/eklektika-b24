@@ -48,6 +48,14 @@ class InboundPayloadNormalizer
             if ($response['http_status'] <= 0) {
                 unset($response['http_status']);
             }
+        } else {
+            $errorCode = (string)($response['error_code'] ?? '');
+            if ($errorCode === 'invalid_payload' || $errorCode === 'unknown_action') {
+                $response['http_status'] = 400;
+            } else {
+                // Known action + domain failure is always transport-success (HTTP 200).
+                $response['http_status'] = 200;
+            }
         }
         if (isset($trace['trace_id']) && $trace['trace_id'] !== '') {
             $response['trace_id'] = $trace['trace_id'];
