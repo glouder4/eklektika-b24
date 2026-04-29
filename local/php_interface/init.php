@@ -70,10 +70,8 @@ session_set_cookie_params([
     //session_set_cookie_params(10800);
 
 	//ini_set('max_execution_time', 300);
-    //require_once __DIR__.'/../classes/requires.php'; // Подключение кастомных обработчиков
-
     $is_test_server = false;
-    define('EKLEKTIKA_SITE_URL', ($is_test_server) ? 'https://test.yomerch.ru' : 'https://yomerch.ru');
+    // YOMERRCH24_SITE_URL задаётся после merge site_sync_settings* (см. ниже), чтобы site_url из модуля имел приоритет.
 	define('URL_B24', ($is_test_server) ? 'https://testbitrix.yomerch.ru/' : 'https://bitrix.yomerch.ru/');
 
 
@@ -230,7 +228,7 @@ function ek_onBeforeDealUpdateNotify(&$arFields) {
 /**
  * @param mixed $v
  */
-$eklektikaB24Flag = static function ($v): bool {
+$yomerrch24B24Flag = static function ($v): bool {
     if ($v === true || $v === 1) {
         return true;
     }
@@ -241,13 +239,13 @@ $eklektikaB24Flag = static function ($v): bool {
     return false;
 };
 
-$eklektikaB24SiteSync = [
+$yomerrch24B24SiteSync = [
     'site_url' => 'https://yomerch.ru',
     'sync_token' => '',
     'sync_debug' => false,
     'sync_trace' => false,
 ];
-$syncSettings = __DIR__ . '/../sync/site_sync_settings.php';
+$syncSettings = __DIR__ . '/../modules/yomerch.b24.siteconnector/site_sync_settings.php';
 $syncSettingsMainReal = \is_file($syncSettings) ? \realpath($syncSettings) : '';
 $syncSettingsMainMtime = \is_file($syncSettings) ? @\filemtime($syncSettings) : 0;
 $syncSettingsMainOk = false;
@@ -257,10 +255,10 @@ if (\is_file($syncSettings)) {
     $syncSettingsMainType = \gettype($cfg);
     if (\is_array($cfg)) {
         $syncSettingsMainOk = true;
-        $eklektikaB24SiteSync = \array_replace($eklektikaB24SiteSync, $cfg);
+        $yomerrch24B24SiteSync = \array_replace($yomerrch24B24SiteSync, $cfg);
     }
 }
-$syncSettingsLocal = __DIR__ . '/../sync/site_sync_settings.local.php';
+$syncSettingsLocal = __DIR__ . '/../modules/yomerch.b24.siteconnector/site_sync_settings.local.php';
 $syncSettingsLocalReal = \is_file($syncSettingsLocal) ? \realpath($syncSettingsLocal) : '';
 $syncSettingsLocalMtime = \is_file($syncSettingsLocal) ? @\filemtime($syncSettingsLocal) : 0;
 $syncSettingsLocalOk = false;
@@ -270,19 +268,27 @@ if (\is_file($syncSettingsLocal)) {
     $syncSettingsLocalType = \gettype($cfg);
     if (\is_array($cfg)) {
         $syncSettingsLocalOk = true;
-        $eklektikaB24SiteSync = \array_replace($eklektikaB24SiteSync, $cfg);
+        $yomerrch24B24SiteSync = \array_replace($yomerrch24B24SiteSync, $cfg);
     }
 }
+
+// Source-of-truth policy: integration secret is read only from site_sync_settings.local.php.
+// Values from tracked site_sync_settings.php are ignored for sync_token to avoid ambiguity.
+$syncTokenFromLocal = '';
+if ($syncSettingsLocalOk && \is_array($cfg ?? null) && \array_key_exists('sync_token', $cfg) && \is_scalar($cfg['sync_token'])) {
+    $syncTokenFromLocal = (string)$cfg['sync_token'];
+}
+$yomerrch24B24SiteSync['sync_token'] = $syncTokenFromLocal;
 
 /**
  * Авторитетно для OutboundRequest::isSiteSync* (обход уже объявленных констант).
  * sync_debug без sync_trace: раньше не писался b24-to-site-sync.log — теперь debug тянет за собой trace в файл.
  */
-$eklektikaB24Debug = $eklektikaB24Flag($eklektikaB24SiteSync['sync_debug'] ?? false);
-$eklektikaB24Trace = $eklektikaB24Flag($eklektikaB24SiteSync['sync_trace'] ?? false);
-$GLOBALS['EKLEKTIKA_B24_SITE_SYNC'] = [
-    'sync_debug' => $eklektikaB24Debug,
-    'sync_trace' => $eklektikaB24Trace || $eklektikaB24Debug,
+$yomerrch24B24Debug = $yomerrch24B24Flag($yomerrch24B24SiteSync['sync_debug'] ?? false);
+$yomerrch24B24Trace = $yomerrch24B24Flag($yomerrch24B24SiteSync['sync_trace'] ?? false);
+$GLOBALS['YOMERRCH24_B24_SITE_SYNC'] = [
+    'sync_debug' => $yomerrch24B24Debug,
+    'sync_trace' => $yomerrch24B24Trace || $yomerrch24B24Debug,
     /** Для отладки: сырые значения после merge файлов и факт наличия local (часто он обнуляет флаги). */
     '_diag' => [
         'path_main' => $syncSettingsMainReal ?: $syncSettings,
@@ -293,29 +299,31 @@ $GLOBALS['EKLEKTIKA_B24_SITE_SYNC'] = [
         'main_include_type' => $syncSettingsMainType,
         'local_returned_array' => $syncSettingsLocalOk,
         'local_include_type' => $syncSettingsLocalType,
-        'raw_sync_debug' => $eklektikaB24SiteSync['sync_debug'] ?? null,
-        'raw_sync_trace' => $eklektikaB24SiteSync['sync_trace'] ?? null,
+        'raw_sync_debug' => $yomerrch24B24SiteSync['sync_debug'] ?? null,
+        'raw_sync_trace' => $yomerrch24B24SiteSync['sync_trace'] ?? null,
+        'sync_token_source' => 'site_sync_settings.local.php',
+        'sync_token_local_present' => $syncTokenFromLocal !== '',
     ],
 ];
-unset($eklektikaB24Debug, $eklektikaB24Trace);
+unset($yomerrch24B24Debug, $yomerrch24B24Trace);
 
-if (!\defined('EKLEKTIKA_SITE_URL')) {
-    $u = \trim((string)($eklektikaB24SiteSync['site_url'] ?? ''));
-    \define('EKLEKTIKA_SITE_URL', $u !== '' ? \rtrim($u, '/') : 'http://new.eklektika.ru');
+if (!\defined('YOMERRCH24_SITE_URL')) {
+    $u = \trim((string)($yomerrch24B24SiteSync['site_url'] ?? ''));
+    \define('YOMERRCH24_SITE_URL', $u !== '' ? \rtrim($u, '/') : 'http://new.yomerrch24.ru');
 }
-if (!\defined('EKLEKTIKA_SITE_SYNC_TOKEN')) {
-    \define('EKLEKTIKA_SITE_SYNC_TOKEN', (string)($eklektikaB24SiteSync['sync_token'] ?? ''));
+if (!\defined('YOMERRCH24_SITE_SYNC_TOKEN')) {
+    \define('YOMERRCH24_SITE_SYNC_TOKEN', (string)($yomerrch24B24SiteSync['sync_token'] ?? ''));
 }
-if (!\defined('EKLEKTIKA_SITE_SYNC_DEBUG')) {
-    \define('EKLEKTIKA_SITE_SYNC_DEBUG', (bool)($GLOBALS['EKLEKTIKA_B24_SITE_SYNC']['sync_debug'] ?? false));
+if (!\defined('YOMERRCH24_SITE_SYNC_DEBUG')) {
+    \define('YOMERRCH24_SITE_SYNC_DEBUG', (bool)($GLOBALS['YOMERRCH24_B24_SITE_SYNC']['sync_debug'] ?? false));
 }
-if (!\defined('EKLEKTIKA_SITE_SYNC_TRACE')) {
-    \define('EKLEKTIKA_SITE_SYNC_TRACE', (bool)($GLOBALS['EKLEKTIKA_B24_SITE_SYNC']['sync_trace'] ?? false));
+if (!\defined('YOMERRCH24_SITE_SYNC_TRACE')) {
+    \define('YOMERRCH24_SITE_SYNC_TRACE', (bool)($GLOBALS['YOMERRCH24_B24_SITE_SYNC']['sync_trace'] ?? false));
 }
 
 unset(
-    $eklektikaB24SiteSync,
-    $eklektikaB24Flag,
+    $yomerrch24B24SiteSync,
+    $yomerrch24B24Flag,
     $syncSettings,
     $syncSettingsLocal,
     $cfg,
@@ -326,8 +334,9 @@ unset(
     $syncSettingsLocalReal,
     $syncSettingsLocalMtime,
     $syncSettingsLocalOk,
-    $syncSettingsLocalType
+    $syncSettingsLocalType,
+    $syncTokenFromLocal
 );
 
-require_once __DIR__ . '/../modules/bootstrap.php'; // Подключение кастомных обработчиков
-require_once __DIR__ . '/../events/requires.php';
+require_once __DIR__ . '/../modules/bootstrap.php'; // кастомные include.php, в т.ч. yomerch.b24.*
+

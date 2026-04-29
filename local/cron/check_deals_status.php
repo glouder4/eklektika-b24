@@ -1,6 +1,7 @@
 <?php
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/local/classes/requires.php';
+// Только DealExpiryHandler из модуля deals.
+require_once $_SERVER['DOCUMENT_ROOT'] . '/local/modules/yomerch.b24.deals/lib/DealExpiryHandler.php';
 
 use Bitrix\Main\Loader;
 use Bitrix\Crm\DealTable;
@@ -12,6 +13,9 @@ class DealStatusChecker
     // Поля для проверки просрочки
     private const RESERVE_EXPIRY_FIELD = 'UF_CRM_1713789046772'; // Просрок резерва
     private const SAMPLE_EXPIRY_FIELD = 'UF_CRM_1754666329972';  // Просрок образца
+
+    private const CUTOVER_SOURCE_NEW_RULES = 'new_rules';
+    private const CUTOVER_SOURCE_LEGACY_FALLBACK = 'legacy_fallback';
     
     public function __construct()
     {
@@ -34,72 +38,128 @@ class DealStatusChecker
      */
     public function getExpiredDeals($customFilter = [])
     {
-        $result = [
-            'reserve_expired' => [],
-            'sample_expired' => [],
-            'both_expired' => [],
-            'total_found' => 0
-        ];
-        
+        $legacyResult = $this->getExpiredDealsLegacy($customFilter);
         try {
-            // Получаем сделки для проверки просрочки резерва (статусы UC_JSQC9O или 6)
-            $reserveDeals = $this->getDealsForReserveCheck($customFilter);
-            
-            // Получаем сделки для проверки просрочки образца (статусы 5 или 7)
-            $sampleDeals = $this->getDealsForSampleCheck($customFilter);
-            
-            // Обрабатываем сделки с просроченным резервом
-            foreach ($reserveDeals as $deal) {
-                if (!empty($deal[self::RESERVE_EXPIRY_FIELD])) {
-                    $reserveDate = new DateTime($deal[self::RESERVE_EXPIRY_FIELD]);
-                    if ($this->currentDate > $reserveDate) {
-                        $result['reserve_expired'][] = $deal;
-                    }
-                }
+            $rulesService = new \OnlineService\DealExpiryRulesService();
+            $newResult = $rulesService->getExpiredDeals();
+
+            $parity = $rulesService->compareLegacyParity($legacyResult, $newResult);
+            $trace = \OnlineService\SyncTraceContext::resolve();
+            $fallbackOnMismatch = $this->isLegacyFallbackOnMismatchEnabled();
+            $hasMismatch = !$parity['reserve_match'] || !$parity['sample_match'];
+            $source = self::CUTOVER_SOURCE_NEW_RULES;
+            $selected = $newResult;
+            if ($fallbackOnMismatch && $hasMismatch) {
+                $source = self::CUTOVER_SOURCE_LEGACY_FALLBACK;
+                $selected = $legacyResult;
             }
-            
-            // Обрабатываем сделки с просроченным образцом
-            foreach ($sampleDeals as $deal) {
-                if (!empty($deal[self::SAMPLE_EXPIRY_FIELD])) {
-                    $sampleDate = new DateTime($deal[self::SAMPLE_EXPIRY_FIELD]);
-                    if ($this->currentDate > $sampleDate) {
-                        $result['sample_expired'][] = $deal;
-                    }
-                }
+            $parityLog = date('Y-m-d H:i:s') . " - PARITY_SMOKE - " . json_encode([
+                'correlation_id' => $trace['correlation_id'],
+                'cutover_label' => $trace['cutover_label'],
+                'cutover_source' => $source,
+                'fallback_on_mismatch' => $fallbackOnMismatch ? 1 : 0,
+                'reserve_match' => $parity['reserve_match'],
+                'sample_match' => $parity['sample_match'],
+                'legacy' => $parity['legacy'],
+                'current' => $parity['current'],
+            ], JSON_UNESCAPED_UNICODE) . "\n";
+            file_put_contents($_SERVER['DOCUMENT_ROOT'] . '/local/cron/deals_expired.log', $parityLog, FILE_APPEND | LOCK_EX);
+
+            $result = [
+                'reserve_expired' => array_values($selected['reserve_expired'] ?? []),
+                'sample_expired' => array_values($selected['sample_expired'] ?? []),
+                'both_expired' => [],
+                'total_found' => count($selected['reserve_expired'] ?? []) + count($selected['sample_expired'] ?? []),
+                'cutover_source' => $source,
+            ];
+        } catch (\Throwable $e) {
+            if ($this->isLegacyFallbackOnErrorEnabled()) {
+                $trace = \OnlineService\SyncTraceContext::resolve();
+                $errorLog = date('Y-m-d H:i:s') . " - RULES_FALLBACK - " . json_encode([
+                    'correlation_id' => $trace['correlation_id'],
+                    'cutover_label' => $trace['cutover_label'],
+                    'cutover_source' => self::CUTOVER_SOURCE_LEGACY_FALLBACK,
+                    'reason' => 'rules_service_error',
+                    'error' => $e->getMessage(),
+                ], JSON_UNESCAPED_UNICODE) . "\n";
+                file_put_contents($_SERVER['DOCUMENT_ROOT'] . '/local/cron/deals_expired.log', $errorLog, FILE_APPEND | LOCK_EX);
+
+                return [
+                    'reserve_expired' => array_values($legacyResult['reserve_expired'] ?? []),
+                    'sample_expired' => array_values($legacyResult['sample_expired'] ?? []),
+                    'both_expired' => [],
+                    'total_found' => count($legacyResult['reserve_expired'] ?? []) + count($legacyResult['sample_expired'] ?? []),
+                    'cutover_source' => self::CUTOVER_SOURCE_LEGACY_FALLBACK,
+                ];
             }
-            
-            // Находим сделки с обоими просроченными полями
-            $reserveDealIds = array_column($result['reserve_expired'], 'ID');
-            $sampleDealIds = array_column($result['sample_expired'], 'ID');
-            $bothExpiredIds = array_intersect($reserveDealIds, $sampleDealIds);
-            
-            // Перемещаем сделки с обоими просроченными полями в отдельный массив
-            foreach ($bothExpiredIds as $dealId) {
-                $reserveIndex = array_search($dealId, $reserveDealIds);
-                $sampleIndex = array_search($dealId, $sampleDealIds);
-                
-                if ($reserveIndex !== false && $sampleIndex !== false) {
-                    $result['both_expired'][] = $result['reserve_expired'][$reserveIndex];
-                    unset($result['reserve_expired'][$reserveIndex]);
-                    unset($result['sample_expired'][$sampleIndex]);
-                }
-            }
-            
-            // Переиндексируем массивы
-            $result['reserve_expired'] = array_values($result['reserve_expired']);
-            $result['sample_expired'] = array_values($result['sample_expired']);
-            
-            $result['total_found'] = count($result['reserve_expired']) + 
-                                   count($result['sample_expired']) + 
-                                   count($result['both_expired']);
-            
-        } catch (Exception $e) {
+
             return [
                 'error' => $e->getMessage(),
-                'success' => false
+                'success' => false,
             ];
         }
         
+        return $result;
+    }
+
+    private function isLegacyFallbackOnMismatchEnabled(): bool
+    {
+        if (\defined('YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH')) {
+            return $this->toBool(\YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH);
+        }
+
+        return $this->toBool(\getenv('YOMERRCH24_DEALS_FALLBACK_ON_MISMATCH'));
+    }
+
+    private function isLegacyFallbackOnErrorEnabled(): bool
+    {
+        if (\defined('YOMERRCH24_DEALS_FALLBACK_ON_ERROR')) {
+            return $this->toBool(\YOMERRCH24_DEALS_FALLBACK_ON_ERROR);
+        }
+
+        return true;
+    }
+
+    private function toBool($value): bool
+    {
+        if ($value === true || $value === 1 || $value === '1') {
+            return true;
+        }
+
+        if (\is_string($value)) {
+            return \in_array(\strtolower(\trim($value)), ['true', 'yes', 'on'], true);
+        }
+
+        return false;
+    }
+
+    private function getExpiredDealsLegacy($customFilter = [])
+    {
+        $result = [
+            'reserve_expired' => [],
+            'sample_expired' => [],
+        ];
+
+        $reserveDeals = $this->getDealsForReserveCheck($customFilter);
+        $sampleDeals = $this->getDealsForSampleCheck($customFilter);
+
+        foreach ($reserveDeals as $deal) {
+            if (!empty($deal[self::RESERVE_EXPIRY_FIELD])) {
+                $reserveDate = new DateTime($deal[self::RESERVE_EXPIRY_FIELD]);
+                if ($this->currentDate > $reserveDate) {
+                    $result['reserve_expired'][] = $deal;
+                }
+            }
+        }
+        foreach ($sampleDeals as $deal) {
+            if (!empty($deal[self::SAMPLE_EXPIRY_FIELD])) {
+                $sampleDate = new DateTime($deal[self::SAMPLE_EXPIRY_FIELD]);
+                if ($this->currentDate > $sampleDate) {
+                    $result['sample_expired'][] = $deal;
+                }
+            }
+        }
+
         return $result;
     }
     
@@ -376,4 +436,5 @@ function CheckDealStatus()
 
 // Удаление агента
 // \CAgent::RemoveAgent("MyCustomAgentFunction();", "");
+
 

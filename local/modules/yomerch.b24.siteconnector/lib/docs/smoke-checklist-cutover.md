@@ -1,0 +1,117 @@
+# Smoke checklist: inbound cutover
+
+- [ ] `UPDATE_GROUP`: send `ACTION=UPDATE_GROUP` with `ID`, `ACTIVE`, `C_SORT`, `NAME`; verify success and group fields updated.
+- [ ] `UPDATE_COMPANY`: send canonical payload with token and trace headers; verify `success=1` and company match by site id.
+- [ ] `GET_CONTACT_ID`: run positive (`EMAIL`/`PHONE` matched) and negative (`not found`) cases; verify deterministic response.
+- [ ] `CRM_METHOD`: run `crm.company.get` and `crm.requisite.list`; verify transport success and expected result shape.
+- [ ] Negative inbound contract: send unknown `ACTION`; verify HTTP `400` + body `error_code=unknown_action`.
+- [ ] Negative inbound contract: send malformed JSON payload or broken `PARAMS`; verify HTTP `400` + body `error_code=invalid_payload`.
+- [ ] Transport parity (`outbound` vs `statussync`): verify both send `X-Sync-Token` + `X-Sync-Trace-ID` and retry on `429/503` with backoff.
+- [ ] Trace propagation: verify one correlation id is present in status outbound log and inbound dispatch log for the same call.
+- [ ] Deals fallback: when rules service mismatches/errors (with fallback toggles), verify log has `cutover_source=legacy_fallback`; otherwise `new_rules`.
+
+## Evidence notes
+- R5 status: **execution pending on target stand**.
+- This package contains ready-to-run commands/payloads and pass criteria to close gate operationally after stand run.
+
+## R5 evidence package (ready to run)
+
+### Preconditions
+- Inbound endpoint: `https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php`
+- Secret source-of-truth: `local/modules/yomerch.b24.siteconnector/site_sync_settings.local.php` key `sync_token`
+- Logs:
+  - inbound: `local/logs/inbound-b24.log`
+  - outbound transport: `local/logs/b24-to-site-sync.log`
+  - deals status flow: `local/logs/deals-status.log` (or stand-equivalent app log configured for `yomerch.b24.deals`)
+
+### 1) Inbound positive: UPDATE_GROUP
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  -H "X-Sync-Trace-ID: R5-INB-UPDATE-GROUP-001" \
+  --data '{"ACTION":"UPDATE_GROUP","PARAMS":{"ID":123,"ACTIVE":"Y","C_SORT":100,"NAME":"R5 Smoke Group"}}'
+```
+Pass criteria:
+- HTTP 200
+- JSON `success=1`
+- `trace_id` present in response and in `local/logs/inbound-b24.log`
+- Group fields match sent payload
+
+### 2) Inbound positive: UPDATE_COMPANY
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  -H "X-Sync-Trace-ID: R5-INB-UPDATE-COMPANY-001" \
+  --data '{"ACTION":"UPDATE_COMPANY","PARAMS":{"ID":1001,"fields":{"TITLE":"R5 Smoke Company"}}}'
+```
+Pass criteria:
+- HTTP 200
+- JSON `success=1`
+- inbound log contains `site_requests_handler.dispatch.done` for `UPDATE_COMPANY` with same trace id
+
+### 3) Inbound positive: CRM_METHOD
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  -H "X-Sync-Trace-ID: R5-INB-CRM-METHOD-001" \
+  --data '{"ACTION":"CRM_METHOD","METHOD":"crm.company.get","PARAMS":{"id":1001}}'
+```
+Pass criteria:
+- HTTP 200
+- JSON `success=1`
+- `result` has expected shape for requested CRM method
+
+### 4) Inbound negative contract checks
+Unknown action:
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  --data '{"ACTION":"UNKNOWN_ACTION","PARAMS":{}}'
+```
+Expected:
+- HTTP 400
+- JSON `error_code=unknown_action`
+
+Invalid payload:
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  --data '{"ACTION":"UPDATE_COMPANY","PARAMS":'
+```
+Expected:
+- HTTP 400
+- JSON `error_code=invalid_payload`
+
+### 5) Outbound/statussync transport parity
+Run one outbound and one statussync trigger for same entity/update window, then compare logs:
+```bash
+rg -n "X-Sync-Token|X-Sync-Trace-ID|retry|429|503" "local/logs/b24-to-site-sync.log"
+```
+Pass criteria:
+- Both paths emit `X-Sync-Token` and `X-Sync-Trace-ID`
+- Retries visible on `429/503` with backoff evidence
+- No silent JSON parse failures (must be explicit `success=0` + error)
+
+### 6) Deals fallback evidence
+Trigger a deals status recalculation:
+```bash
+php "local/cron/check_deals_status.php"
+```
+Pass criteria:
+- Log contains either `cutover_source=legacy_fallback` (when fallback path triggered) or `cutover_source=new_rules`
+- Scenario/result is linked to trace/correlation id in stand logs
+
+### Evidence collection template
+- Command/request sample used: `<paste exact curl/php command>`
+- Timestamp (UTC): `<YYYY-MM-DDTHH:MM:SSZ>`
+- Trace/request id: `<id>`
+- Response snippet: `<json>`
+- Log references:
+  - `local/logs/inbound-b24.log`: `<line/time fragment>`
+  - `local/logs/b24-to-site-sync.log`: `<line/time fragment>`
+  - deals log: `<line/time fragment>`
