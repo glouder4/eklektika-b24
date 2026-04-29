@@ -32,6 +32,8 @@ bitrix/.settings.php
 /.env
 /local/config/
 /local/sync/site_sync_settings.local.php
+/local/modules/yomerch.b24.siteconnector/site_sync_settings.local.php
+/local/logs/
 
 # IDE и системные файлы
 /.idea/
@@ -45,3 +47,11 @@ bitrix/.settings.php
 .graphify_extract.json
 .graphify_python
 /graphify-out
+/bitrix24-external-developers
+/local/.cursor
+/local/bitrix24-external-developers
+/local/docs
+/local/graphify-out
+/local/.graphify-scope-local
+/docs
+/docs
