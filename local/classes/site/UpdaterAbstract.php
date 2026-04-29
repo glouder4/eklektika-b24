@@ -13,7 +13,7 @@
         }
 
         protected function sendRequest($params, $debug = false){
-            $queryUrl = EKLEKTIKA_SITE_URL.'/local/classes/ajax.php';
+            $queryUrl = EKLEKTIKA_SITE_URL.'/local/modules/yomerch.b24.inbound/endpoint.php';
             $curl = curl_init();
             $queryData  = http_build_query($params);
 
@@ -69,27 +69,28 @@
                 ];
             }
 
-            // Парсим JSON ответ
+            // Для Bitrix важно завершить обработчик после успешного HTTP-ответа,
+            // даже если удалённая сторона вернула не-JSON.
             $decodedResult = json_decode($result, true);
-
-            if (json_last_error() !== JSON_ERROR_NONE) {
+            if (json_last_error() === JSON_ERROR_NONE) {
                 if( $debug ) {
-                    pre("JSON Parse Error: " . json_last_error_msg());
-                    pre("Raw response that failed to parse: " . $result);
+                    pre("=== Parsed Response ===");
+                    pre($decodedResult);
+                    die();
                 }
-                return [
-                    'success' => $httpCode === 200,
-                    'error' => 'JSON Parse Error: ' . json_last_error_msg(),
-                    'raw_response' => $result
-                ];
-            }
-            if( $debug ) {
-                pre("=== Parsed Response ===");
-                pre($decodedResult);
-                die();
+
+                return $decodedResult;
             }
 
-            return $decodedResult;
+            if( $debug ) {
+                pre("JSON Parse Warning: " . json_last_error_msg());
+                pre("Raw response that failed to parse: " . $result);
+            }
+
+            return [
+                'success' => 1,
+                'raw_response' => $result
+            ];
         }
 
         protected function callAPI(){
