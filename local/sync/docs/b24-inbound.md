@@ -17,4 +17,6 @@
 
 ## Статус
 
-- На текущем этапе входящий канал выделен структурно (`from-site`), но конкретные обработчики еще не перенесены.
+- Входящий канал перенесен в `local/sync/from-site/site_requests_handler.php` + `InboundEndpoint.php`.
+- `local/classes/ajax.php` и `local/classes/site_requests_handler.php` оставлены как legacy-адаптеры совместимости.
+- Контрактный endpoint для внешних вызовов: `/local/modules/yomerch.b24.inbound/endpoint.php`.

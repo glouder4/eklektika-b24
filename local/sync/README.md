@@ -18,6 +18,8 @@
 - `local/php_interface/init.php` подключает `local/events/requires.php`.
 - `local/events/requires.php` подключает `local/sync/bootstrap.php` и затем `local/events/events.php`.
 - `local/events/events.php` регистрирует обработчики через `Bitrix\Main\EventManager`.
+- Модульный контрактный endpoint входящего канала: `/local/modules/yomerch.b24.inbound/endpoint.php` (прокси в `from-site/site_requests_handler.php`).
+- `local/modules/yomerch.b24.inbound` используется как контейнер endpoint, это не отдельный бизнес-модуль Bitrix.
 
 ## Каналы (логически)
 
