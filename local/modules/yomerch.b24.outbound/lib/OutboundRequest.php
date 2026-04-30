@@ -214,8 +214,8 @@ class OutboundRequest
         $debug = $debug || self::isSiteSyncDebugEnabled();
         $trace = \OnlineService\SyncTraceContext::resolve($params);
 
-        // Для UPDATE_COMPANY отправляем весь список CONTACT_IDS в пользовательские поля.
-        // На стороне сайта этот список резолвится в b_user.ID через contact->user mapping.
+        // Для UPDATE_COMPANY дублируем CONTACT_IDS в OS_COMPANY_USERS / LEGAN_ENTITY_USERS.
+        // CONTACT_IDS — идентификаторы на сайте (UF contact.delete_site_ref и т.п.), не CRM CONTACT_ID.
         if (($params['ACTION'] ?? '') === 'UPDATE_COMPANY') {
             self::writeOutboundTrace('sendRequest update_company requisites keys', [
                 'correlation_id' => (string)$trace['correlation_id'],

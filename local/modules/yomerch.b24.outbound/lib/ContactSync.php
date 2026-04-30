@@ -12,7 +12,7 @@ class ContactSync extends OutboundRequest
     private const UF_CONTACT_IS_DIRECTOR = 'contact.is_director';
     private const UF_COMPANY_IS_HEAD = 'company.is_head';
     private const UF_COMPANY_HOLDING = 'company.holding';
-    private const HOLDING_IBLOCK_ID = 57;
+    private const HOLDING_IBLOCK_ID = 34;
     private const HOLDING_PROP_B24 = 'B24_COMPANY_ID';
     private const UF_COMPANY_DISCOUNT = 'company.discount';
 
@@ -64,10 +64,20 @@ class ContactSync extends OutboundRequest
             return true;
         }
 
+        $siteRef = self::resolveContactOutboundSiteRef($contactId, $args);
+        if ($siteRef === '') {
+            self::writeOutboundTrace('ContactSync::delete_contact.skip_no_site_ref', [
+                'contact_id' => $contactId,
+                'uf' => self::uf('contact.delete_site_ref'),
+            ]);
+            return true;
+        }
+
         $sync = new self();
         $response = $sync->sendRequest([
             'ACTION' => 'DELETE_CONTACT',
-            'ID' => $contactId,
+            'ID' => $siteRef,
+            'OS_COMPANY_B24_ID' => $siteRef,
             'B24_ID' => $contactId,
         ], false);
 
@@ -75,6 +85,8 @@ class ContactSync extends OutboundRequest
             error_log(
                 '[ContactSync::onBeforeContactDelete] Site sync failed for contact '
                 . $contactId
+                . ' delete_site_id='
+                . $siteRef
                 . '; result='
                 . json_encode($response, JSON_UNESCAPED_UNICODE)
             );
@@ -181,8 +193,15 @@ class ContactSync extends OutboundRequest
         $params[$ufCompanyDiscount] = '';
         $params['OS_COMPANY_DISCOUNT_VALUE'] = '';
         $companyB24Id = self::resolvePrimaryCompanyB24Id($contactId);
-        if ($companyB24Id > 0) {
+        $siteCatalogRef = self::resolveContactOutboundSiteRef($contactId);
+        if ($siteCatalogRef !== '') {
+            $params['ID'] = $siteCatalogRef;
+            // Сайт: `ID` и `OS_COMPANY_B24_ID` — одно и то же значение UF (`contact.delete_site_ref`).
+            $params['OS_COMPANY_B24_ID'] = $siteCatalogRef;
+        } elseif ($companyB24Id > 0) {
             $params['OS_COMPANY_B24_ID'] = $companyB24Id;
+        }
+        if ($companyB24Id > 0) {
             $discountValue = self::getCompanyDiscountValue($companyB24Id);
             $params[$ufCompanyDiscount] = $discountValue;
             // Совместимость с сайтом: часть обработчиков читает OS_* ключи.
@@ -260,6 +279,24 @@ class ContactSync extends OutboundRequest
         return (int)$companyIds[0];
     }
 
+    /**
+     * Нормализованная скидка компании по CRM ID (для UPDATE_COMPANY и др.).
+     */
+    public static function getNormalizedCompanyDiscount(int $companyId): string
+    {
+        return self::getCompanyDiscountValue($companyId);
+    }
+
+    /**
+     * Нормализация сырого значения UF скидки для контракта с сайтом.
+     *
+     * @param mixed $raw
+     */
+    public static function normalizeDiscountFromRaw($raw): string
+    {
+        return self::normalizeDiscountValue($raw);
+    }
+
     private static function getCompanyDiscountValue(int $companyId): string
     {
         if ($companyId <= 0) {
@@ -268,7 +305,15 @@ class ContactSync extends OutboundRequest
         global $USER_FIELD_MANAGER;
         if (is_object($USER_FIELD_MANAGER)) {
             $ufRows = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId, LANGUAGE_ID);
-            $raw = $ufRows[self::uf(self::UF_COMPANY_DISCOUNT)]['VALUE'] ?? null;
+            $key = self::uf(self::UF_COMPANY_DISCOUNT);
+            $cell = $ufRows[$key] ?? null;
+            $raw = null;
+            if (is_array($cell)) {
+                $raw = $cell['VALUE'] ?? null;
+                if (($raw === null || $raw === '') && array_key_exists('VALUE_ID', $cell)) {
+                    $raw = $cell['VALUE_ID'];
+                }
+            }
             if ($raw !== null && $raw !== '') {
                 return self::normalizeDiscountValue($raw);
             }
@@ -299,8 +344,14 @@ class ContactSync extends OutboundRequest
         if ($value === '') {
             return '';
         }
-        // Приводим десятичный разделитель к точке, оставляя формат как строку для контракта сайта.
-        $value = str_replace(',', '.', $value);
+        // «1,017» как тысячи — не превращаем в 1.017.
+        $compact = str_replace([' ', "\xc2\xa0"], '', $value);
+        if (preg_match('/^\d{1,3}(?:,\d{3})+$/', $compact)) {
+            $value = str_replace(',', '', $compact);
+        } else {
+            // Приводим десятичный разделитель к точке, оставляя формат как строку для контракта сайта.
+            $value = str_replace(',', '.', $value);
+        }
         if (!preg_match('/^-?\d+(?:\.\d+)?$/', $value)) {
             return '';
         }
@@ -368,7 +419,154 @@ class ContactSync extends OutboundRequest
         return 0;
     }
 
-    /** 
+    /**
+     * Значение UF `contact.delete_site_ref` для произвольного CRM-контакта (без аргументов события).
+     * Используется в {@see CompanySync} для CONTACT_IDS / пользовательских списков в UPDATE_COMPANY.
+     */
+    public static function outboundSiteCatalogRefForContact(int $contactId): string
+    {
+        return self::resolveContactOutboundSiteRef($contactId, []);
+    }
+
+    /**
+     * Значение UF {@see UfMap} `contact.delete_site_ref` (`UF_CRM_3804624445748`):
+     * DELETE_CONTACT — поля `ID` / `OS_COMPANY_B24_ID`; UPDATE_CONTACT — то же + скидка компании.
+     *
+     * @param array<int, mixed> $eventArgs аргументы CRM-события (например OnBeforeCrmContactDelete) — UF часто доступен здесь раньше, чем в «обрезанном» GetByID.
+     */
+    private static function resolveContactOutboundSiteRef(int $contactId, array $eventArgs = []): string
+    {
+        if ($contactId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
+            return '';
+        }
+
+        $ufKey = self::uf('contact.delete_site_ref');
+
+        $fromEvent = self::extractSiteRefFromCrmEventArgs($eventArgs, $ufKey);
+        if ($fromEvent !== '') {
+            return $fromEvent;
+        }
+
+        if (class_exists(\Bitrix\Crm\ContactTable::class)) {
+            try {
+                $row = \Bitrix\Crm\ContactTable::getList([
+                    'filter' => ['=ID' => $contactId],
+                    'select' => ['ID', $ufKey],
+                    'limit' => 1,
+                ])->fetch();
+                if (is_array($row)) {
+                    $fromTable = self::normalizeOutboundSiteRefScalar(self::extractSingleUfValue($row, $ufKey));
+                    if ($fromTable !== '') {
+                        return $fromTable;
+                    }
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+
+        $contact = \CCrmContact::GetByID($contactId, false);
+        if (!is_array($contact) || empty($contact)) {
+            return '';
+        }
+
+        global $USER_FIELD_MANAGER;
+        if (is_object($USER_FIELD_MANAGER)) {
+            $lang = defined('LANGUAGE_ID') ? (string)LANGUAGE_ID : '';
+            $ufRows = $USER_FIELD_MANAGER->GetUserFields('CRM_CONTACT', $contactId, $lang);
+            foreach ($ufRows as $fieldName => $fieldMeta) {
+                if (!is_string($fieldName) || strncmp($fieldName, 'UF_', 3) !== 0) {
+                    continue;
+                }
+                $v = $fieldMeta['VALUE'] ?? null;
+                if (!array_key_exists($fieldName, $contact) || $contact[$fieldName] === null || $contact[$fieldName] === '') {
+                    $contact[$fieldName] = $v;
+                }
+            }
+        }
+
+        $raw = self::extractSingleUfValue($contact, $ufKey);
+
+        return self::normalizeOutboundSiteRefScalar($raw);
+    }
+
+    /**
+     * @param array<int, mixed> $eventArgs
+     */
+    private static function extractSiteRefFromCrmEventArgs(array $eventArgs, string $ufKey): string
+    {
+        foreach ($eventArgs as $payload) {
+            if (!is_array($payload)) {
+                continue;
+            }
+            $blocks = [];
+            foreach (['FIELDS', 'fields', 'arFields', 'AR_FIELDS', 'FIELD_VALUES', 'ENTITY_FIELDS'] as $k) {
+                if (isset($payload[$k]) && is_array($payload[$k])) {
+                    $blocks[] = $payload[$k];
+                }
+            }
+            $blocks[] = $payload;
+            foreach ($blocks as $block) {
+                $hit = self::deepFindUfValue($block, $ufKey, 0);
+                if ($hit !== '') {
+                    return $hit;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private static function deepFindUfValue(array $data, string $ufKey, int $depth): string
+    {
+        if ($depth > 6) {
+            return '';
+        }
+        if (array_key_exists($ufKey, $data)) {
+            $s = self::normalizeOutboundSiteRefScalar($data[$ufKey]);
+            if ($s !== '') {
+                return $s;
+            }
+        }
+        foreach ($data as $v) {
+            if (is_array($v)) {
+                $s = self::deepFindUfValue($v, $ufKey, $depth + 1);
+                if ($s !== '') {
+                    return $s;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param mixed $raw
+     */
+    private static function normalizeOutboundSiteRefScalar($raw): string
+    {
+        if ($raw === null || $raw === false) {
+            return '';
+        }
+        if (is_scalar($raw)) {
+            return trim((string)$raw);
+        }
+        if (is_array($raw)) {
+            if (array_key_exists('VALUE', $raw)) {
+                return self::normalizeOutboundSiteRefScalar($raw['VALUE']);
+            }
+            $first = reset($raw);
+            if ($first !== false) {
+                return self::normalizeOutboundSiteRefScalar($first);
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * В разных обработчиках CRM ID может приходить в разных ключах.
      */
     private static function extractContactIdFromArgs(array $args): int

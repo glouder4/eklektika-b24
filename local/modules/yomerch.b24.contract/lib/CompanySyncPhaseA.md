@@ -1,7 +1,7 @@
 # CompanySync Phase A Mapping
 
 - `CompanySyncReadService::loadCompanySnapshot()` reads CRM company row + UF + requisites + multifields.
-- `CompanySyncNormalizeService::normalizeForOutbound()` normalizes site payload primitives.
+- `CompanySyncNormalizeService::normalizeForOutbound()` normalizes site payload primitives (для `site_element_id` сначала канонический UF `company.site_element_id`, при пустом — legacy `company.site_element_id_legacy_alias`).
 - `CompanySyncPolicyService::validateHeadHoldingTransition()` validates head/holding policy before mutation.
 
 ## Shadow compare note

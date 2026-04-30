@@ -32,9 +32,34 @@ class InboundEndpoint
             'GET_CONTACT_ID' => static function (array $r): array { return self::handleGetContactId($r); },
             'UPDATE_COMPANY' => static function (array $r): array { return self::handleUpdateCompany($r); },
             'CRM_METHOD' => static function (array $r): array { return self::handleCrmMethod($r); },
+            'DELETE_CONTACT' => static function (array $r): array { return self::handleDeleteContactLegacy($r); },
         ]);
 
         return $dispatcher->dispatch((string)($request['ACTION'] ?? ''), $request);
+    }
+
+    /**
+     * Делегирование в {@see \OnlineService\LocalApplicationHandler} (контракт R12).
+     */
+    private static function handleDeleteContactLegacy(array $request): array
+    {
+        if (!\class_exists(\OnlineService\LocalApplicationHandler::class)) {
+            return [
+                'success' => 0,
+                'error' => 'DELETE_CONTACT handler unavailable',
+                'reason_code' => 'delete_contact_handler_missing',
+            ];
+        }
+        $handler = new \OnlineService\LocalApplicationHandler($request);
+        $raw = $handler->getResponse();
+        $ok = isset($raw['success']) && $raw['success'] === true;
+
+        return [
+            'success' => $ok ? 1 : 0,
+            'error' => $ok ? '' : (string)($raw['error'] ?? $raw['data'] ?? 'delete_contact_failed'),
+            'data' => \is_array($raw['debug'] ?? null) ? $raw['debug'] : [],
+            'reason_code' => $ok ? '' : 'delete_contact_failed',
+        ];
     }
 
     private static function handleGetContactId(array $request): array
@@ -379,6 +404,25 @@ class InboundEndpoint
     private static function crmCompanyAdd(array $params): array
     {
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
+        $innDigits = self::normalizeInnDigits(self::extractInnFromCompanyAddFields($fields));
+        if ($innDigits !== '') {
+            $existingCompanyIds = self::findCompanyIdsByRequisiteInn($innDigits);
+            if (\count($existingCompanyIds) === 1) {
+                return self::crmCompanyResolveDuplicateInn($fields, $innDigits, (int)$existingCompanyIds[0]);
+            }
+            if (\count($existingCompanyIds) > 1) {
+                return [
+                    'success' => 0,
+                    'error' => 'Multiple companies matched INN; resolve manually',
+                    'reason_code' => 'company_add_ambiguous_inn',
+                    'data' => [
+                        'matched_company_ids' => $existingCompanyIds,
+                        'rq_inn' => $innDigits,
+                    ],
+                ];
+            }
+        }
+
         $entity = new \CCrmCompany(false);
         $id = (int)$entity->Add($fields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
         if ($id <= 0) {
@@ -549,6 +593,389 @@ class InboundEndpoint
         }
 
         return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+    }
+
+    /**
+     * ИНН из полей `crm.company.add` (верхний уровень или вложенные блоки реквизита).
+     *
+     * @param array<string, mixed> $fields
+     */
+    private static function extractInnFromCompanyAddFields(array $fields): string
+    {
+        $top = self::scalarStringFromMixed($fields['RQ_INN'] ?? null);
+        if ($top !== '') {
+            return $top;
+        }
+
+        foreach (['REQUISITE', 'REQUISITES', 'Requisite', 'requisite'] as $blockKey) {
+            if (!isset($fields[$blockKey]) || !\is_array($fields[$blockKey])) {
+                continue;
+            }
+            $hit = self::deepFindInnInNestedArray($fields[$blockKey], 5);
+            if ($hit !== '') {
+                return $hit;
+            }
+        }
+
+        return self::deepFindInnInNestedArray($fields, 4);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private static function deepFindInnInNestedArray(array $data, int $depth): string
+    {
+        if ($depth <= 0) {
+            return '';
+        }
+        if (\array_key_exists('RQ_INN', $data)) {
+            $s = self::scalarStringFromMixed($data['RQ_INN']);
+            if ($s !== '') {
+                return $s;
+            }
+        }
+        foreach ($data as $v) {
+            if (!\is_array($v)) {
+                continue;
+            }
+            $s = self::deepFindInnInNestedArray($v, $depth - 1);
+            if ($s !== '') {
+                return $s;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param mixed $v
+     */
+    private static function scalarStringFromMixed($v): string
+    {
+        if ($v === null || $v === false) {
+            return '';
+        }
+        if (\is_scalar($v)) {
+            return \trim((string) $v);
+        }
+        if (\is_array($v) && \array_key_exists('VALUE', $v)) {
+            return \trim((string) $v['VALUE']);
+        }
+
+        return '';
+    }
+
+    private static function normalizeInnDigits(string $inn): string
+    {
+        $d = \preg_replace('/\D+/', '', $inn);
+
+        return \is_string($d) ? $d : '';
+    }
+
+    /**
+     * Компании CRM (ENTITY_ID реквизита), у которых в реквизите указан ИНН.
+     *
+     * @return list<int>
+     */
+    private static function findCompanyIdsByRequisiteInn(string $innDigits): array
+    {
+        if ($innDigits === '' || !\class_exists(\Bitrix\Crm\RequisiteTable::class)) {
+            return [];
+        }
+
+        $rows = \Bitrix\Crm\RequisiteTable::getList([
+            'filter' => [
+                '=RQ_INN' => $innDigits,
+                '=ENTITY_TYPE_ID' => \CCrmOwnerType::Company,
+            ],
+            'select' => ['ENTITY_ID'],
+        ])->fetchAll();
+
+        $set = [];
+        foreach ($rows as $row) {
+            $eid = (int)($row['ENTITY_ID'] ?? 0);
+            if ($eid > 0) {
+                $set[$eid] = true;
+            }
+        }
+        $ids = \array_keys($set);
+        \sort($ids, \SORT_NUMERIC);
+
+        return $ids;
+    }
+
+    /**
+     * ИНН уже занят одной компанией: головная → дочерняя + UF холдинга; иначе → только привязка контакта к найденной компании (без второго Add).
+     *
+     * @param array<string, mixed> $fields
+     */
+    private static function crmCompanyResolveDuplicateInn(array $fields, string $innDigits, int $existingCompanyId): array
+    {
+        $ufHeadFlag = self::uf('company.head_company_flag');
+        if (!self::crmCompanyUfIsTruthy($existingCompanyId, $ufHeadFlag)) {
+            return [
+                'success' => 1,
+                'result' => $existingCompanyId,
+                'reason_code' => 'company_add_use_existing_for_contact',
+                'data' => [
+                    'rq_inn' => $innDigits,
+                    'company_id' => $existingCompanyId,
+                    'attach_contact_only' => true,
+                ],
+            ];
+        }
+
+        return self::crmCompanyAddChildWhenHeadCompanySharesInn($fields, $innDigits, $existingCompanyId);
+    }
+
+    /**
+     * ИНН уже есть у головной компании: создаём дочернюю и синхронизируем UF «Фирмы холдинга».
+     *
+     * @param array<string, mixed> $fields
+     */
+    private static function crmCompanyAddChildWhenHeadCompanySharesInn(array $fields, string $innDigits, int $headCompanyId): array
+    {
+        $ufHolding = self::uf('company.holding');
+        $ufMembers = self::uf('company.holding_group_members');
+        $childFields = $fields;
+        $childFields[$ufHolding] = $headCompanyId;
+
+        $entity = new \CCrmCompany(false);
+        $childId = (int)$entity->Add($childFields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+        if ($childId <= 0) {
+            return [
+                'success' => 0,
+                'error' => (string)$entity->LAST_ERROR,
+                'reason_code' => 'company_add_child_failed',
+                'data' => ['rq_inn' => $innDigits, 'head_company_id' => $headCompanyId],
+            ];
+        }
+
+        $memberIds = self::collectHoldingMemberCompanyIds($headCompanyId, $childId, $ufHolding, $ufMembers);
+        self::propagateHoldingGroupMembersUfToAll($memberIds, $ufMembers);
+
+        return [
+            'success' => 1,
+            'result' => $childId,
+            'reason_code' => 'company_add_child_under_head_inn',
+            'data' => [
+                'head_company_id' => $headCompanyId,
+                'child_company_id' => $childId,
+                'holding_member_company_ids' => $memberIds,
+                'rq_inn' => $innDigits,
+            ],
+        ];
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function collectHoldingMemberCompanyIds(int $headId, int $childId, string $holdingUf, string $membersUf): array
+    {
+        $linked = self::findCompanyIdsWithHoldingParentRef($headId, $holdingUf);
+        $fromHeadList = self::readCompanyUfCrmCompanyMultilistIds($headId, $membersUf);
+        $merged = \array_merge([$headId, $childId], $linked, $fromHeadList);
+        $out = [];
+        foreach ($merged as $id) {
+            $id = (int)$id;
+            if ($id > 0) {
+                $out[$id] = true;
+            }
+        }
+        $ids = \array_keys($out);
+        \sort($ids, \SORT_NUMERIC);
+
+        return $ids;
+    }
+
+    /**
+     * @param list<int> $memberCompanyIds
+     */
+    private static function propagateHoldingGroupMembersUfToAll(array $memberCompanyIds, string $membersUf): void
+    {
+        if ($memberCompanyIds === []) {
+            return;
+        }
+        $preferred = self::formatCrmCompanyMultilistBindingValues($memberCompanyIds);
+        $fallback = self::formatNumericCompanyIdListValues($memberCompanyIds);
+        CompanySync::runWithHoldingGroupMembersUfMutationAllowed(static function () use ($memberCompanyIds, $membersUf, $preferred, $fallback): void {
+            foreach ($memberCompanyIds as $cid) {
+                if ($cid <= 0) {
+                    continue;
+                }
+                CompanySync::markInboundCompanyUpdate($cid);
+                $entity = new \CCrmCompany(false);
+                $memberFields = [$membersUf => $preferred];
+                $ok = (bool)$entity->Update(
+                    $cid,
+                    $memberFields,
+                    true,
+                    true,
+                    [
+                        'CURRENT_USER' => 1,
+                        'IS_SYSTEM_ACTION' => true,
+                    ]
+                );
+                if (!$ok && $fallback !== []) {
+                    CompanySync::markInboundCompanyUpdate($cid);
+                    $entity2 = new \CCrmCompany(false);
+                    $memberFieldsFb = [$membersUf => $fallback];
+                    $entity2->Update(
+                        $cid,
+                        $memberFieldsFb,
+                        true,
+                        true,
+                        [
+                            'CURRENT_USER' => 1,
+                            'IS_SYSTEM_ACTION' => true,
+                        ]
+                    );
+                }
+            }
+        });
+    }
+
+    /**
+     * @param list<int> $companyIds
+     * @return list<string>
+     */
+    private static function formatCrmCompanyMultilistBindingValues(array $companyIds): array
+    {
+        $values = [];
+        foreach (\array_unique(\array_map('intval', $companyIds)) as $id) {
+            if ($id > 0) {
+                $values[] = 'CO_' . $id;
+            }
+        }
+        \sort($values, \SORT_STRING);
+
+        return \array_values(\array_unique($values));
+    }
+
+    /**
+     * @param list<int> $companyIds
+     * @return list<int>
+     */
+    private static function formatNumericCompanyIdListValues(array $companyIds): array
+    {
+        $values = [];
+        foreach (\array_unique(\array_map('intval', $companyIds)) as $id) {
+            if ($id > 0) {
+                $values[] = $id;
+            }
+        }
+        \sort($values, \SORT_NUMERIC);
+
+        return \array_values(\array_unique($values));
+    }
+
+    /**
+     * Дочерние компании, у которых в UF «холдинг» указана головная (CRM ID / строка / CO_*).
+     *
+     * @return list<int>
+     */
+    private static function findCompanyIdsWithHoldingParentRef(int $headId, string $holdingUf): array
+    {
+        $variants = [$headId, (string)$headId, 'CO_' . $headId];
+        $seen = [];
+        foreach ($variants as $v) {
+            $res = \CCrmCompany::GetListEx(
+                ['ID' => 'ASC'],
+                [
+                    '=' . $holdingUf => $v,
+                    'CHECK_PERMISSIONS' => 'N',
+                ],
+                false,
+                false,
+                ['ID']
+            );
+            while ($row = $res->Fetch()) {
+                $id = (int)($row['ID'] ?? 0);
+                if ($id > 0) {
+                    $seen[$id] = true;
+                }
+            }
+        }
+
+        return \array_keys($seen);
+    }
+
+    /**
+     * Разбор UF типа привязки к компаниям CRM (CO_123 или число).
+     *
+     * @return list<int>
+     */
+    private static function readCompanyUfCrmCompanyMultilistIds(int $companyId, string $ufKey): array
+    {
+        if ($companyId <= 0) {
+            return [];
+        }
+        $row = \CCrmCompany::GetByID($companyId, false);
+        if (!\is_array($row)) {
+            return [];
+        }
+        global $USER_FIELD_MANAGER;
+        if (\is_object($USER_FIELD_MANAGER)) {
+            $ufs = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId);
+            if (isset($ufs[$ufKey])) {
+                $row[$ufKey] = $ufs[$ufKey]['VALUE'] ?? ($row[$ufKey] ?? null);
+            }
+        }
+        $raw = $row[$ufKey] ?? null;
+        if ($raw === null || $raw === '' || $raw === false) {
+            return [];
+        }
+        $values = \is_array($raw) ? $raw : [$raw];
+        $ids = [];
+        foreach ($values as $value) {
+            if (\is_string($value) && \strpos($value, 'CO_') === 0) {
+                $ids[] = (int)\substr($value, 3);
+                continue;
+            }
+            $ids[] = (int)$value;
+        }
+
+        return \array_values(\array_unique(\array_filter($ids, static function (int $id): bool {
+            return $id > 0;
+        })));
+    }
+
+    private static function crmCompanyUfIsTruthy(int $companyId, string $ufKey): bool
+    {
+        if ($companyId <= 0) {
+            return false;
+        }
+        $row = \CCrmCompany::GetByID($companyId, false);
+        if (!\is_array($row)) {
+            return false;
+        }
+        global $USER_FIELD_MANAGER;
+        if (\is_object($USER_FIELD_MANAGER)) {
+            $ufs = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId);
+            if (isset($ufs[$ufKey])) {
+                $row[$ufKey] = $ufs[$ufKey]['VALUE'] ?? ($row[$ufKey] ?? null);
+            }
+        }
+        $raw = $row[$ufKey] ?? null;
+
+        return self::crmScalarIsTruthy($raw);
+    }
+
+    /**
+     * @param mixed $raw
+     */
+    private static function crmScalarIsTruthy($raw): bool
+    {
+        if ($raw === 'Y' || $raw === true || $raw === 1 || $raw === '1') {
+            return true;
+        }
+        if (\is_array($raw)) {
+            if (\array_key_exists('VALUE', $raw)) {
+                return self::crmScalarIsTruthy($raw['VALUE']);
+            }
+        }
+
+        return false;
     }
 
     private static function findCompanyIdsBySiteElementId(string $siteElementId): array

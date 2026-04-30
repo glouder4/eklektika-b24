@@ -10,11 +10,18 @@ use OnlineService\Sync\Contract\CompanySyncReadService;
 // UF-карта: модуль yomerch.b24.contract → lib/config/uf_mapping.php.
 class CompanySync extends OutboundRequest
 {
-    private const HOLDING_IBLOCK_ID = 57;
+    /** Инфоблок каталога холдингов: UF `company.holding` ссылается на элементы этого ИБ; головная/дочерние — здесь же. */
+    private const HOLDING_IBLOCK_ID = 34;
+    /** Семантически то же, что {@see HOLDING_IBLOCK_ID} (отдельного «ИБ 57» на портале нет). */
+    private const HOLDING_UF_IBLOCK_ID = 34;
     private const UF_COMPANY_HOLDING = 'company.holding';
     private const UF_COMPANY_DISCOUNT = 'company.discount';
     private const UF_COMPANY_HOLDING_COMPANIES = 'company.holding_companies';
+    /** Множественная привязка к компаниям CRM: головная + все участники холдинга (см. {@see syncHoldingGroupMembersAcrossCluster}). */
+    private const UF_COMPANY_HOLDING_GROUP_MEMBERS = 'company.holding_group_members';
     private const UF_COMPANY_IS_HEAD = 'company.is_head';
+    /** UF «головная» для холдинга (портал), см. inbound duplicate INN / очистка при снятии флага. */
+    private const UF_COMPANY_HEAD_PORTAL = 'company.head_company_flag';
     /** ID пользователя на сайте, хранится в UF контакта CRM */
     private const UF_CONTACT_SITE_USER_ID = 'contact.site_user_id';
     /** UF компании CRM → на сайте LEGAN_MAIN_PHONE (только в UPDATE_COMPANY) */
@@ -28,8 +35,44 @@ class CompanySync extends OutboundRequest
     private const IBLOCK16_PROP_CHILDREN = 'CHILDREN_COMPANIES';
     /** Enum «головная» (IS_HEAD_*) */
     private const IBLOCK16_IS_HEAD_ENUM_ID = 56;
+    /**
+     * Защита от сбоев фильтра GetListEx: при превышении не пишем UF «участники холдинга» на всех (риск записать всю базу).
+     */
+    private const MAX_HOLDING_GROUP_CLUSTER_MEMBERS = 2000;
     /** @var array<int, bool> */
     private static array $skipOutboundForCompanyIds = [];
+
+    /**
+     * UF «участники холдинга» ({@see UF_COMPANY_HOLDING_GROUP_MEMBERS}) меняется только из синхронизации
+     * (обёртка {@see runWithHoldingGroupMembersUfMutationAllowed}); ручное редактирование в карточке снимается в OnBefore.
+     */
+    private static int $holdingGroupMembersUfMutationDepth = 0;
+
+    /**
+     * Выполнить блок, внутри которого разрешены CCrmCompany::Update с UF участников холдинга.
+     */
+    public static function runWithHoldingGroupMembersUfMutationAllowed(callable $fn): void
+    {
+        self::$holdingGroupMembersUfMutationDepth++;
+        try {
+            $fn();
+        } finally {
+            self::$holdingGroupMembersUfMutationDepth--;
+        }
+    }
+
+    /**
+     * Ручная правка UF участников холдинга запрещена политикой — снимаем ключ до сохранения.
+     *
+     * @param array<string, mixed> $arFields
+     */
+    private static function stripUnauthorizedHoldingGroupMembersUf(array &$arFields): void
+    {
+        $k = self::uf(self::UF_COMPANY_HOLDING_GROUP_MEMBERS);
+        if (\array_key_exists($k, $arFields) && self::$holdingGroupMembersUfMutationDepth <= 0) {
+            unset($arFields[$k]);
+        }
+    }
 
     public static function markInboundCompanyUpdate(int $companyId): void
     {
@@ -104,26 +147,60 @@ class CompanySync extends OutboundRequest
 
     /**
      * Компания в CRM обновляется: валидация + отправка минимального события на сайт.
+     *
+     * @param array<string, mixed> $arFields
      */
     public static function onBeforeCompanyUpdate(&$arFields): bool
     {
+        if (!\is_array($arFields)) {
+            return true;
+        }
+
+        self::stripUnauthorizedHoldingGroupMembersUf($arFields);
+
         $companyId = (int)($arFields['ID'] ?? 0);
+        global $USER_FIELD_MANAGER;
+        $ufValues = ($companyId > 0 && \is_object($USER_FIELD_MANAGER))
+            ? $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId)
+            : [];
+
+        $policyService = new CompanySyncPolicyService();
+        $ufHeadPortal = self::uf(self::UF_COMPANY_HEAD_PORTAL);
+        $ufCompanyHolding = self::uf(self::UF_COMPANY_HOLDING);
+
+        $portalPolicy = $policyService->validatePortalHeadFlagVsHoldingExclusive(
+            $ufValues,
+            $arFields,
+            $ufHeadPortal,
+            $ufCompanyHolding
+        );
+        if (!(bool)($portalPolicy['ok'] ?? false)) {
+            $arFields['RESULT_MESSAGE'] = (string)($portalPolicy['message'] ?? 'Несовместимые значения полей головной компании и холдинга');
+
+            return false;
+        }
+
         if ($companyId <= 0) {
             return true;
         }
 
-        global $USER_FIELD_MANAGER;
-        $ufValues = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId);
         $ufCompanyIsHead = self::uf(self::UF_COMPANY_IS_HEAD);
-        $ufCompanyHolding = self::uf(self::UF_COMPANY_HOLDING);
-        $policyService = new CompanySyncPolicyService();
         $policy = $policyService->validateHeadHoldingTransition($ufValues, $arFields, $ufCompanyIsHead, $ufCompanyHolding);
         $wasHeadCompany = (bool)($policy['was_head'] ?? false);
         $willBeHeadCompany = (bool)($policy['will_head'] ?? false);
 
         if (!(bool)($policy['ok'] ?? false)) {
             $arFields['RESULT_MESSAGE'] = (string)($policy['message'] ?? 'Компания не может быть головной И входить в другой холдинг');
+
             return false;
+        }
+
+        $wasPortalHead = self::isTruthy($ufValues[$ufHeadPortal]['VALUE'] ?? null);
+        $willPortalHead = \array_key_exists($ufHeadPortal, $arFields)
+            ? self::isTruthy($arFields[$ufHeadPortal] ?? null)
+            : $wasPortalHead;
+        if ($wasPortalHead && !$willPortalHead) {
+            self::clearHoldingChildrenWhenPortalHeadFlagRemoved($companyId);
         }
 
         if ($wasHeadCompany && !$willBeHeadCompany) {
@@ -196,6 +273,7 @@ class CompanySync extends OutboundRequest
 
         $ufCompanyIsHead = self::uf(self::UF_COMPANY_IS_HEAD);
         $ufCompanyHolding = self::uf(self::UF_COMPANY_HOLDING);
+        $ufHeadPortal = self::uf(self::UF_COMPANY_HEAD_PORTAL);
         $ufCompanyDiscount = self::uf(self::UF_COMPANY_DISCOUNT);
         $ufCompanyHoldingCompanies = self::uf(self::UF_COMPANY_HOLDING_COMPANIES);
         $isHead = self::isTruthy($company[$ufCompanyIsHead] ?? null);
@@ -217,6 +295,13 @@ class CompanySync extends OutboundRequest
             || array_key_exists($ufCompanyIsHead, $arFields)
         ) {
             self::syncHoldingCompaniesBindingField($companyId, $company);
+        }
+        // UF участников холдинга — только при изменении «головная по порталу» или UF холдинга (не при ручной правке; см. OnBefore).
+        if (
+            array_key_exists($ufHeadPortal, $arFields)
+            || array_key_exists($ufCompanyHolding, $arFields)
+        ) {
+            self::syncHoldingGroupMembersAcrossCluster($companyId, $company);
         }
         if (
             $isHead
@@ -243,7 +328,11 @@ class CompanySync extends OutboundRequest
         $ufCompanyCity = self::uf('company.city');
         $ufCompanyBusinessScope = self::uf('company.business_scope');
         $ufCompanyLegalAddress = self::uf('company.legal_address');
-        $isMarketingAgentRaw = $company[$ufCompanyIsMarketingAgent] ?? null;
+        $isMarketingAgentRaw = self::extractCompanyUfScalarForOutbound(
+            $arFields,
+            $company,
+            $ufCompanyIsMarketingAgent
+        );
         //$companyStatusId = $arFields['company.status'] ?? null;
         $reqFileId = (int)($arFields[$ufCompanyRequisitesFile] ?? 0);
         $fileInfo = $reqFileId > 0 ? \CFile::GetFileArray($reqFileId) : null;
@@ -256,6 +345,7 @@ class CompanySync extends OutboundRequest
             'company_business_scope' => $ufCompanyBusinessScope,
             'company_legal_address' => $ufCompanyLegalAddress,
             'company_site_element_id' => $ufCompanySiteElementId,
+            'company_site_element_id_legacy' => $ufCompanySiteElementIdLegacy,
         ]);
         self::writeOutboundTrace('CompanySync::phaseA_normalize_shadow', [
             'company_id' => $companyId,
@@ -276,9 +366,17 @@ class CompanySync extends OutboundRequest
         );
         $holdingCompaniesBinding = self::resolveHoldingCompanyB24Ids($companyId, $company);
         $holdingCompaniesBindingPayload = self::formatHoldingChildMultival($holdingCompaniesBinding);
-        $headList = ['VALUE' => $isHead ? 2074 : false];
+        $isHeadPortal = self::isTruthy(self::extractCompanyUfScalarForOutbound($arFields, $company, $ufHeadPortal));
+        $headList = ['VALUE' => $isHeadPortal ? 2074 : false];
+        if ($isHeadPortal) {
+            self::ensureHoldingUfCatalogElementForPortalHeadCompany($companyId, $title);
+        }
 
-        // OS_COMPANY_USERS / LEGAN_ENTITY_USERS — ID пользователей на сайте, не CRM CONTACT_ID.
+        // Скидка всегда от карточки обновляемой компании ($companyId): в $arFields UF часто отсутствует при частичном сохранении.
+        $discountForOutbound = self::resolveOutboundDiscountForUpdatedCompany($companyId, $arFields, $ufCompanyDiscount);
+
+        // CONTACT_IDS / OS_COMPANY_USERS / LEGAN_ENTITY_USERS — идентификаторы на сайте (UF contact.delete_site_ref),
+        // не CRM CONTACT_ID. OutboundRequest::sendRequest для UPDATE_COMPANY подставляет OS_* из CONTACT_IDS.
         $companySiteUserIds = self::buildSiteUserIdsForContacts($contactIds);
         $leganPhones = self::leganPhoneFieldsFromCompany($company);
 
@@ -287,13 +385,14 @@ class CompanySync extends OutboundRequest
         $params = \array_merge(
             [
                 'ACTION' => 'UPDATE_COMPANY',
-                'CONTACT_IDS' => $contactIds,
+                'CONTACT_IDS' => $companySiteUserIds,
                 'OS_COMPANY_B24_ID' => $companyId,
                 $ufCompanySiteElementId => $siteElementId,
                 // @deprecated temporary alias for legacy site handlers; remove after full cutover.
                 $ufCompanySiteElementIdLegacy => $siteElementId,
                 'OS_COMPANY_NAME' => $title,
                 'OS_COMPANY_IS_HEAD_OF_HOLDING' => $headList,
+                $ufHeadPortal => $isHeadPortal ? 'Y' : 'N',
                 'OS_HOLDING_OF' => self::getHoldingOfBitrixId($resolvedHoldingElementId),
                 'OS_HEAD_COMPANY_B24_ID' => $isHead ? $headCompanyIblockId : false,
                 'OS_COMPANY_USERS' => $companySiteUserIds,
@@ -301,7 +400,8 @@ class CompanySync extends OutboundRequest
                 'OS_COMPANY_INN' => $inn,
                 'OS_COMPANY_CITY' => $city,
                 $ufCompanyCity => $city,
-                'OS_COMPANY_DISCOUNT_VALUE' => $arFields[$ufCompanyDiscount] ?? '',
+                $ufCompanyDiscount => $discountForOutbound,
+                'OS_COMPANY_DISCOUNT_VALUE' => $discountForOutbound,
                 'OS_COMPANY_WEB_SITE' => $web,
                 $ufCompanyWeb => $web,
                 $ufCompanyBusinessScope => $businessScope,
@@ -311,7 +411,7 @@ class CompanySync extends OutboundRequest
                 'OS_COMPANY_PHONE' => $phone,
                 'OS_COMPANY_EMAIL' => $email,
                 'OS_IS_MARKETING_AGENT' => ['VALUE' => self::isTruthy($isMarketingAgentRaw) ? 2076 : false],
-                'ACTIVE' => self::isTruthy($company[$ufCompanyIsMarketingAgent] ?? null) ? 'Y' : 'N',
+                'ACTIVE' => self::isTruthy($isMarketingAgentRaw) ? 'Y' : 'N',
             ],
             $leganPhones
         );
@@ -552,9 +652,10 @@ class CompanySync extends OutboundRequest
             if ($childCompanyId <= 0) {
                 continue;
             }
+            $detachHoldingFields = [self::uf(self::UF_COMPANY_HOLDING) => false];
             $ok = $companyEntity->Update(
                 $childCompanyId,
-                [self::uf(self::UF_COMPANY_HOLDING) => false],
+                $detachHoldingFields,
                 true,
                 true,
                 [
@@ -564,9 +665,10 @@ class CompanySync extends OutboundRequest
             );
             if (!$ok) {
                 foreach ($detachedChildCompanyIds as $rollbackChildCompanyId) {
+                    $rollbackHoldingFields = [self::uf(self::UF_COMPANY_HOLDING) => $holdingElementId];
                     $companyEntity->Update(
                         $rollbackChildCompanyId,
-                        [self::uf(self::UF_COMPANY_HOLDING) => $holdingElementId],
+                        $rollbackHoldingFields,
                         true,
                         true,
                         [
@@ -714,6 +816,376 @@ class CompanySync extends OutboundRequest
                 'read_back_ids' => $readBackAfterFallback,
             ]);
         }
+    }
+
+    /**
+     * UF {@see UF_COMPANY_HOLDING_GROUP_MEMBERS}: одинаковый состав (головная + дочерние по элементу каталога
+     * {@see HOLDING_IBLOCK_ID}) на всех участниках кластера — через {@see getChildB24IdsLinkedToHoldingIblock},
+     * без отдельного поиска «всех с UF = CRM ID головы» при некорректном разнесении ИБ.
+     *
+     * @param array<string, mixed> $company
+     */
+    private static function syncHoldingGroupMembersAcrossCluster(int $companyId, array $company): void
+    {
+        if ($companyId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
+            return;
+        }
+        $membersUf = self::uf(self::UF_COMPANY_HOLDING_GROUP_MEMBERS);
+        $memberIds = self::collectHoldingGroupMemberCompanyIdsForOutbound($companyId, $company);
+
+        if ($memberIds === []) {
+            self::writeOutboundTrace('CompanySync::holding_group_members_skip_empty_cluster', [
+                'company_id' => $companyId,
+            ]);
+
+            return;
+        }
+        if (\count($memberIds) > self::MAX_HOLDING_GROUP_CLUSTER_MEMBERS) {
+            self::writeOutboundTrace('CompanySync::holding_group_members_abort_cluster_too_large', [
+                'company_id' => $companyId,
+                'member_count' => \count($memberIds),
+                'max_allowed' => self::MAX_HOLDING_GROUP_CLUSTER_MEMBERS,
+            ]);
+            error_log(
+                '[CompanySync::syncHoldingGroupMembersAcrossCluster] Aborted: cluster size '
+                . \count($memberIds)
+                . ' exceeds MAX_HOLDING_GROUP_CLUSTER_MEMBERS ('
+                . self::MAX_HOLDING_GROUP_CLUSTER_MEMBERS
+                . '). Check CRM filters / UF holding logic.'
+            );
+
+            return;
+        }
+
+        $preferred = self::formatCompanyCrmBindingValues($memberIds);
+        if ($preferred === false) {
+            return;
+        }
+        $fallback = self::formatCompanyNumericBindingValues($memberIds);
+
+        self::writeOutboundTrace('CompanySync::holding_group_members_propagate', [
+            'trigger_company_id' => $companyId,
+            'member_count' => \count($memberIds),
+            'member_ids_sample' => \array_slice($memberIds, 0, 30),
+        ]);
+
+        self::runWithHoldingGroupMembersUfMutationAllowed(static function () use ($membersUf, $memberIds, $preferred, $fallback): void {
+            foreach ($memberIds as $cid) {
+                if ($cid <= 0) {
+                    continue;
+                }
+                self::markInboundCompanyUpdate($cid);
+                $memberFields = [$membersUf => $preferred];
+                $entity = new \CCrmCompany(false);
+                $ok = (bool) $entity->Update(
+                    $cid,
+                    $memberFields,
+                    true,
+                    true,
+                    [
+                        'CURRENT_USER' => \CCrmSecurityHelper::GetCurrentUserID(),
+                        'IS_SYSTEM_ACTION' => true,
+                    ]
+                );
+                if (!$ok && $fallback !== false) {
+                    self::markInboundCompanyUpdate($cid);
+                    $memberFieldsFb = [$membersUf => $fallback];
+                    $entity2 = new \CCrmCompany(false);
+                    (bool) $entity2->Update(
+                        $cid,
+                        $memberFieldsFb,
+                        true,
+                        true,
+                        [
+                            'CURRENT_USER' => \CCrmSecurityHelper::GetCurrentUserID(),
+                            'IS_SYSTEM_ACTION' => true,
+                        ]
+                    );
+                }
+            }
+        });
+    }
+
+    /**
+     * Пересчитать UF «участники холдинга» для кластера этой компании (обновляются все участники кластера).
+     * Для разового прогона после исправления логики {@see getChildB24IdsLinkedToHoldingIblock} / вариантов UF.
+     */
+    public static function repairHoldingGroupMembersForCompanyId(int $companyId): bool
+    {
+        if ($companyId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
+            return false;
+        }
+        $readService = new CompanySyncReadService();
+        $company = $readService->loadCompanySnapshot($companyId);
+        if (!$company) {
+            return false;
+        }
+        self::syncHoldingGroupMembersAcrossCluster($companyId, $company);
+
+        return true;
+    }
+
+    /**
+     * Массовый пересчёт: для каждого ID грузим снимок, пропускаем дубликаты по одному элементу каталога холдинга
+     * (один вызов {@see syncHoldingGroupMembersAcrossCluster} уже обновляет весь кластер).
+     *
+     * @param list<int> $companyIds
+     *
+     * @return array{processed: int, skipped_duplicate_cluster: int, failed: int, failed_ids: list<int>}
+     */
+    public static function repairHoldingGroupMembersForCompanyIds(array $companyIds): array
+    {
+        $stats = [
+            'processed' => 0,
+            'skipped_duplicate_cluster' => 0,
+            'failed' => 0,
+            'failed_ids' => [],
+        ];
+        if (!\Bitrix\Main\Loader::includeModule('crm')) {
+            return $stats;
+        }
+        $readService = new CompanySyncReadService();
+        $seenCluster = [];
+        foreach ($companyIds as $rawId) {
+            $companyId = (int) $rawId;
+            if ($companyId <= 0) {
+                continue;
+            }
+            $company = $readService->loadCompanySnapshot($companyId);
+            if (!$company) {
+                ++$stats['failed'];
+                $stats['failed_ids'][] = $companyId;
+
+                continue;
+            }
+            $key = self::holdingClusterRepairKey($companyId, $company);
+            if (isset($seenCluster[$key])) {
+                ++$stats['skipped_duplicate_cluster'];
+
+                continue;
+            }
+            $seenCluster[$key] = true;
+            self::syncHoldingGroupMembersAcrossCluster($companyId, $company);
+            ++$stats['processed'];
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Ключ дедупликации при массовом repair: один элемент каталога ИБ → один прогон синхронизации кластера.
+     */
+    private static function holdingClusterRepairKey(int $companyId, array $company): string
+    {
+        $el = self::resolveHoldingIblockElementForOutboundCluster($companyId, $company);
+
+        return $el > 0 ? 'ib:' . $el : 'cid:' . $companyId;
+    }
+
+    /**
+     * Элемент каталога холдингов ({@see HOLDING_IBLOCK_ID}) для кластера UF «участники»: совпадает с опорой
+     * {@see resolveHoldingCompanyB24Ids}; при необходимости — переход по CRM ID головы из элемента каталога.
+     *
+     * @param array<string, mixed> $company
+     */
+    private static function resolveHoldingIblockElementForOutboundCluster(int $triggerCompanyId, array $company): int
+    {
+        if ($triggerCompanyId <= 0) {
+            return 0;
+        }
+        if (self::isTruthy($company[self::uf(self::UF_COMPANY_IS_HEAD)] ?? null)) {
+            $headEl = self::findHeadElementInIblock($triggerCompanyId);
+
+            return $headEl ? (int) $headEl : 0;
+        }
+        $holdingUf = self::uf(self::UF_COMPANY_HOLDING);
+        $ref = self::extractHoldingRefValue($company[$holdingUf] ?? null);
+        if ($ref <= 0) {
+            return 0;
+        }
+        $holdingElementId = self::resolveHoldingElementId($ref);
+        if ($holdingElementId > 0) {
+            return $holdingElementId;
+        }
+        $headFromCatalog = self::getHeadCrmIdFromHoldingUfCatalogElement34($ref);
+        if ($headFromCatalog > 0) {
+            $headEl = self::findHeadElementInIblock($headFromCatalog);
+
+            return $headEl ? (int) $headEl : 0;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Состав для UF «участники холдинга»: головная + дочерние по тому же элементу каталога {@see HOLDING_IBLOCK_ID},
+     * что и привязки {@see getChildB24IdsLinkedToHoldingIblock} (см. outbound holding_companies). Раньше при широком
+     * поиске по UF вызывался {@see findCompanyIdsByHoldingUfVariants} с вариантом «CRM ID головы», из‑за чего в кластер
+     * попадали лишние компании. Если элемент каталога не удаётся резолвить — fallback {@see resolveHoldingCompanyB24Ids}.
+     *
+     * @param array<string, mixed> $company
+     *
+     * @return list<int>
+     */
+    private static function collectHoldingGroupMemberCompanyIdsForOutbound(int $triggerCompanyId, array $company): array
+    {
+        $holdingElementId = self::resolveHoldingIblockElementForOutboundCluster($triggerCompanyId, $company);
+
+        $memberSet = [];
+
+        if ($holdingElementId > 0) {
+            $headCrm = (int) (self::getHoldingOfBitrixId($holdingElementId) ?: 0);
+            if ($headCrm > 0) {
+                $memberSet[$headCrm] = true;
+            }
+            foreach (self::getChildB24IdsLinkedToHoldingIblock($holdingElementId) as $cid) {
+                $cid = (int) $cid;
+                if ($cid > 0) {
+                    $memberSet[$cid] = true;
+                }
+            }
+        } else {
+            foreach (self::resolveHoldingCompanyB24Ids($triggerCompanyId, $company) as $cid) {
+                $cid = (int) $cid;
+                if ($cid > 0) {
+                    $memberSet[$cid] = true;
+                }
+            }
+        }
+
+        if ($triggerCompanyId > 0) {
+            $memberSet[$triggerCompanyId] = true;
+        }
+
+        $ids = \array_keys($memberSet);
+        \sort($ids, \SORT_NUMERIC);
+
+        return $ids;
+    }
+
+    /**
+     * CRM ID головной компании: элемент {@see HOLDING_UF_IBLOCK_ID} с ID = $elementId и свойством {@see IBLOCK16_PROP_B24}.
+     */
+    private static function getHeadCrmIdFromHoldingUfCatalogElement34(int $elementId): int
+    {
+        if ($elementId <= 0 || !\Bitrix\Main\Loader::includeModule('iblock')) {
+            return 0;
+        }
+        $exists = \CIBlockElement::GetList(
+            [],
+            [
+                'ID' => $elementId,
+                'IBLOCK_ID' => self::HOLDING_UF_IBLOCK_ID,
+            ],
+            false,
+            false,
+            ['ID']
+        )->Fetch();
+        if (!\is_array($exists)) {
+            return 0;
+        }
+        $res = \CIBlockElement::GetProperty(
+            self::HOLDING_UF_IBLOCK_ID,
+            $elementId,
+            [],
+            ['CODE' => self::IBLOCK16_PROP_B24]
+        );
+        if ($prop = $res->Fetch()) {
+            $v = (int)($prop['VALUE'] ?? 0);
+
+            return $v > 0 ? $v : 0;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Значения UF холдинга для поиска «всех своих»: элемент каталога ИБ (int/string), CRM ID головной (int/string).
+     * Префикс CO_ для фильтра GetListEx не используем: на части порталов `= UF => CO_<crmId>` возвращает сотни ложных
+     * совпадений при типе UF «привязка к элементам инфоблока» (см. отладку: CO_2973 → 179, элемент ИБ → 1).
+     *
+     * @return list<int|string>
+     */
+    private static function holdingUfSearchVariantsForCluster(int $holdingRef, int $headCrmId): array
+    {
+        $out = [$holdingRef, (string) $holdingRef];
+        if ($headCrmId > 0) {
+            $out[] = $headCrmId;
+            $out[] = (string) $headCrmId;
+        }
+
+        return array_values(array_unique($out, \SORT_REGULAR));
+    }
+
+    /**
+     * Все возможные значения UF холдинга для одного кластера с элементом каталога $holdingCatalogElementId
+     * ({@see HOLDING_IBLOCK_ID}), включая дублирующий поиск по элементу того же ИБ с тем же B24 головной.
+     *
+     * @return list<int|string>
+     */
+    private static function holdingUfSearchVariantsForLinkedToHoldingCatalogElement(int $holdingCatalogElementId): array
+    {
+        if ($holdingCatalogElementId <= 0) {
+            return [];
+        }
+        $headB24 = (int) (self::getHoldingOfBitrixId($holdingCatalogElementId) ?: 0);
+        $variants = self::holdingUfSearchVariantsForCluster($holdingCatalogElementId, $headB24);
+        if ($headB24 > 0) {
+            $catalogDup = self::findHoldingCatalogElementIdByB24Company(self::HOLDING_UF_IBLOCK_ID, $headB24);
+            if ($catalogDup > 0) {
+                $variants[] = $catalogDup;
+                $variants[] = (string) $catalogDup;
+            }
+        }
+
+        return array_values(array_unique($variants, \SORT_REGULAR));
+    }
+
+    /**
+     * Все компании CRM, у которых UF холдинга равен одному из вариантов.
+     * Отдельный GetListEx на каждый вариант (несколько коротких выборок по индексу UF), без LOGIC OR:
+     * в CCrmCompany::GetListEx связка LOGIC OR + CHECK_PERMISSIONS и UF на части порталов даёт запрос без ограничения по UF
+     * и возвращает все компании — из‑за этого UF «участники холдинга» заполнялся всей базой.
+     *
+     * @param list<int|string> $variants
+     *
+     * @return list<int>
+     */
+    private static function findCompanyIdsByHoldingUfVariants(string $holdingUf, array $variants): array
+    {
+        $dedupeVal = [];
+        $seen = [];
+        foreach ($variants as $val) {
+            if ($val === '' || $val === false || $val === null) {
+                continue;
+            }
+            $k = (\is_int($val) ? 'i:' : 's:') . (string) $val;
+            if (isset($dedupeVal[$k])) {
+                continue;
+            }
+            $dedupeVal[$k] = true;
+
+            $res = \CCrmCompany::GetListEx(
+                ['ID' => 'ASC'],
+                [
+                    '=' . $holdingUf => $val,
+                    'CHECK_PERMISSIONS' => 'N',
+                ],
+                false,
+                false,
+                ['ID']
+            );
+            while ($row = $res->Fetch()) {
+                $id = (int)($row['ID'] ?? 0);
+                if ($id > 0) {
+                    $seen[$id] = true;
+                }
+            }
+        }
+        $ids = array_keys($seen);
+        sort($ids, \SORT_NUMERIC);
+
+        return $ids;
     }
 
     /**
@@ -923,14 +1395,28 @@ class CompanySync extends OutboundRequest
     }
 
     /**
-     * @param list<int> $contactIds
+     * Идентификаторы контактов для сайта: сначала UF {@see UfMap} `contact.delete_site_ref`, иначе UF `contact.site_user_id`.
+     *
+     * @param list<int> $contactIds CRM CONTACT_ID
      * @return list<int>
      */
     private static function buildSiteUserIdsForContacts(array $contactIds): array
     {
         $out = [];
         foreach ($contactIds as $contactId) {
-            $sid = self::getContactSiteUserId((int)$contactId);
+            $cid = (int)$contactId;
+            if ($cid <= 0) {
+                continue;
+            }
+            $ref = ContactSync::outboundSiteCatalogRefForContact($cid);
+            if ($ref !== '') {
+                $n = (int)$ref;
+                if ($n > 0) {
+                    $out[] = $n;
+                    continue;
+                }
+            }
+            $sid = self::getContactSiteUserId($cid);
             if ($sid > 0) {
                 $out[] = $sid;
             }
@@ -981,6 +1467,227 @@ class CompanySync extends OutboundRequest
     }
 
     /**
+     * Снятие `company.head_company_flag` (UF_CRM_1758028888): элемент ИБ 34 с `B24_COMPANY_ID` = головной компании
+     * деактивируется; у дочерних (UF `company.holding` → этот элемент или legacy CRM ID) очищаются `company.holding` и `company.holding_group_members`.
+     */
+    private static function clearHoldingChildrenWhenPortalHeadFlagRemoved(int $headCompanyId): void
+    {
+        if ($headCompanyId <= 0) {
+            return;
+        }
+        $holdingUf = self::uf(self::UF_COMPANY_HOLDING);
+        $membersUf = self::uf(self::UF_COMPANY_HOLDING_GROUP_MEMBERS);
+
+        $elementId = self::findHoldingCatalogElementIdByB24Company(self::HOLDING_UF_IBLOCK_ID, $headCompanyId);
+        if ($elementId > 0 && \Bitrix\Main\Loader::includeModule('iblock')) {
+            $el = new \CIBlockElement();
+            if (!$el->Update($elementId, ['ACTIVE' => 'N'])) {
+                self::writeOutboundTrace('CompanySync::portal_head_flag_iblock34_deactivate_failed', [
+                    'head_company_id' => $headCompanyId,
+                    'iblock_element_id' => $elementId,
+                ]);
+            }
+        }
+
+        $childIds = self::findChildCompaniesForHoldingUnlink($elementId, $holdingUf, $headCompanyId);
+        self::runWithHoldingGroupMembersUfMutationAllowed(static function () use ($childIds, $holdingUf, $membersUf): void {
+            foreach ($childIds as $cid) {
+                self::markInboundCompanyUpdate($cid);
+                $entity = new \CCrmCompany(false);
+                // Нельзя передавать литерал массива: у CCrmCompany::Update $arFields — по ссылке (PHP 8+).
+                $clearChildUfFields = [
+                    $holdingUf => false,
+                    $membersUf => false,
+                ];
+                $ok = (bool) $entity->Update(
+                    $cid,
+                    $clearChildUfFields,
+                    true,
+                    true,
+                    [
+                        'CURRENT_USER' => 1,
+                        'IS_SYSTEM_ACTION' => true,
+                    ]
+                );
+                if (!$ok) {
+                    self::writeOutboundTrace('CompanySync::portal_head_flag_child_uf_clear_failed', [
+                        'child_company_id' => $cid,
+                        'error' => (string) ($entity->LAST_ERROR ?? ''),
+                    ]);
+                }
+            }
+        });
+
+        self::writeOutboundTrace('CompanySync::portal_head_flag_cleanup', [
+            'head_company_id' => $headCompanyId,
+            'iblock34_element_id' => $elementId,
+            'cleared_child_ids' => $childIds,
+        ]);
+    }
+
+    /**
+     * Элемент инфоблока холдинга (ИБ 34) по свойству {@see IBLOCK16_PROP_B24}.
+     */
+    private static function findHoldingCatalogElementIdByB24Company(int $iblockId, int $b24CompanyId): int
+    {
+        if ($b24CompanyId <= 0 || !\Bitrix\Main\Loader::includeModule('iblock')) {
+            return 0;
+        }
+
+        $rsElement = \CIBlockElement::GetList(
+            [],
+            [
+                'IBLOCK_ID' => $iblockId,
+                'PROPERTY_' . self::IBLOCK16_PROP_B24 => $b24CompanyId,
+            ],
+            false,
+            false,
+            ['ID']
+        );
+        if ($row = $rsElement->Fetch()) {
+            return (int)($row['ID'] ?? 0);
+        }
+
+        return 0;
+    }
+
+    /**
+     * Установка `company.head_company_flag` (UF_CRM_1758028888): в ИБ {@see HOLDING_UF_IBLOCK_ID} ищем элемент
+     * с {@see IBLOCK16_PROP_B24} = CRM ID компании — при необходимости активируем или создаём запись.
+     * Снятие галочки обрабатывается в {@see clearHoldingChildrenWhenPortalHeadFlagRemoved}.
+     */
+    private static function ensureHoldingUfCatalogElementForPortalHeadCompany(int $companyId, string $title): void
+    {
+        if ($companyId <= 0 || !\Bitrix\Main\Loader::includeModule('iblock')) {
+            return;
+        }
+        $iblockId = self::HOLDING_UF_IBLOCK_ID;
+        $elementId = self::findHoldingCatalogElementIdByB24Company($iblockId, $companyId);
+        $name = $title !== '' ? $title : ('Компания ' . $companyId);
+        $el = new \CIBlockElement();
+
+        if ($elementId > 0) {
+            $rs = \CIBlockElement::GetList(
+                [],
+                ['ID' => $elementId, 'IBLOCK_ID' => $iblockId],
+                false,
+                false,
+                ['ID', 'ACTIVE']
+            );
+            $row = $rs->Fetch();
+            if (!\is_array($row)) {
+                self::writeOutboundTrace('CompanySync::holding_uf_ib34_ensure_no_element_row', [
+                    'company_id' => $companyId,
+                    'element_id' => $elementId,
+                ]);
+
+                return;
+            }
+            if (($row['ACTIVE'] ?? '') === 'Y') {
+                return;
+            }
+            if (!$el->Update($elementId, ['ACTIVE' => 'Y'])) {
+                self::writeOutboundTrace('CompanySync::holding_uf_ib34_activate_failed', [
+                    'company_id' => $companyId,
+                    'element_id' => $elementId,
+                    'error' => (string) ($el->LAST_ERROR ?? ''),
+                ]);
+
+                return;
+            }
+            self::writeOutboundTrace('CompanySync::holding_uf_ib34_activated', [
+                'company_id' => $companyId,
+                'element_id' => $elementId,
+            ]);
+
+            return;
+        }
+
+        $newId = $el->Add([
+            'IBLOCK_ID' => $iblockId,
+            'IBLOCK_SECTION_ID' => false,
+            'NAME' => $name,
+            'ACTIVE' => 'Y',
+            'PROPERTY_VALUES' => [
+                self::IBLOCK16_PROP_B24 => $companyId,
+            ],
+        ]);
+        if (!$newId) {
+            self::writeOutboundTrace('CompanySync::holding_uf_ib34_create_failed', [
+                'company_id' => $companyId,
+                'error' => (string) ($el->LAST_ERROR ?? ''),
+            ]);
+
+            return;
+        }
+        self::writeOutboundTrace('CompanySync::holding_uf_ib34_created', [
+            'company_id' => $companyId,
+            'iblock_element_id' => (int) $newId,
+        ]);
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<int>
+     */
+    private static function findCompanyIdsByHoldingUfValue(string $holdingUf, $value): array
+    {
+        if ($value === null || $value === '' || $value === false) {
+            return [];
+        }
+
+        $ids = [];
+        $res = \CCrmCompany::GetListEx(
+            ['ID' => 'ASC'],
+            [
+                '=' . $holdingUf => $value,
+                'CHECK_PERMISSIONS' => 'N',
+            ],
+            false,
+            false,
+            ['ID']
+        );
+        while ($row = $res->Fetch()) {
+            $id = (int)($row['ID'] ?? 0);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Дочерние компании для очистки UF: привязка к головной через элемент каталога или legacy (CRM ID в UF).
+     *
+     * @return list<int>
+     */
+    private static function findChildCompaniesForHoldingUnlink(int $elementId, string $holdingUf, int $headCompanyId): array
+    {
+        $seen = [];
+        $variants = [];
+        if ($elementId > 0) {
+            $variants[] = $elementId;
+            $variants[] = (string) $elementId;
+        }
+        $variants[] = $headCompanyId;
+        $variants[] = (string) $headCompanyId;
+
+        foreach (\array_unique($variants, \SORT_REGULAR) as $v) {
+            foreach (self::findCompanyIdsByHoldingUfValue($holdingUf, $v) as $cid) {
+                if ($cid > 0 && $cid !== $headCompanyId) {
+                    $seen[$cid] = true;
+                }
+            }
+        }
+
+        $out = \array_keys($seen);
+        \sort($out, \SORT_NUMERIC);
+
+        return $out;
+    }
+
+    /**
      * Поиск элемента "головной компании" в ИБ холдингов по B24 ID компании.
      */
     private static function findHeadElementInIblock($companyId)
@@ -1015,43 +1722,22 @@ class CompanySync extends OutboundRequest
     }
 
     /**
-     * B24 ID компаний, у которых в поле холдинга указан элемент ИБ 16 (холдинг-родитель).
+     * B24 ID компаний, у которых в поле холдинга указан тот же холдинг, что и элемент каталога {@see HOLDING_IBLOCK_ID}
+     * ($holdingIblockElementId).
+     * Раньше: полный перебор всех компаний + UF на каждую (минуты на больших базах).
+     * Сейчас: отдельные короткие GetListEx по каноническим значениям UF (см. {@see findCompanyIdsByHoldingUfVariants}).
      *
      * @return list<int>
      */
     private static function getChildB24IdsLinkedToHoldingIblock(int $holdingIblockElementId): array
     {
-        if ($holdingIblockElementId <= 0) {
+        if ($holdingIblockElementId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
             return [];
         }
-        if (!\Bitrix\Main\Loader::includeModule('crm')) {
-            return [];
-        }
-        $target = $holdingIblockElementId;
-        $ids = [];
-        $rsCompanies = \Bitrix\Crm\CompanyTable::getList([
-            'select' => ['ID'],
-            'order' => ['ID' => 'ASC'],
-        ]);
-        global $USER_FIELD_MANAGER;
-        if (!\is_object($USER_FIELD_MANAGER)) {
-            return [];
-        }
-        while ($row = $rsCompanies->fetch()) {
-            $cid = (int)($row['ID'] ?? 0);
-            if ($cid <= 0) {
-                continue;
-            }
-            $ufValues = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $cid);
-            $hRaw = $ufValues[self::uf(self::UF_COMPANY_HOLDING)]['VALUE'] ?? null;
-            $holdingRef = self::extractHoldingRefValue($hRaw);
-            $resolvedHoldingElementId = self::resolveHoldingElementId($holdingRef);
-            if ($resolvedHoldingElementId === $target) {
-                $ids[] = $cid;
-            }
-        }
+        $holdingUf = self::uf(self::UF_COMPANY_HOLDING);
+        $variants = self::holdingUfSearchVariantsForLinkedToHoldingCatalogElement($holdingIblockElementId);
 
-        return \array_values(\array_unique($ids));
+        return self::findCompanyIdsByHoldingUfVariants($holdingUf, $variants);
     }
 
     /**
@@ -1398,6 +2084,51 @@ class CompanySync extends OutboundRequest
         }
 
         return '';
+    }
+
+    /**
+     * Скидка для UPDATE_COMPANY: непустая только если в CRM у этой компании поле реально пустое.
+     * Приоритет — фактическое значение в карточке (GetUserFields + VALUE_ID для списков), не $arFields:
+     * иначе при частичном сохранении в $arFields часто приходит пустой VALUE для enum, хотя в базе выбран вариант.
+     *
+     * @param array<string, mixed> $arFields
+     */
+    private static function resolveOutboundDiscountForUpdatedCompany(int $companyId, array $arFields, string $ufDiscountKey): string
+    {
+        if ($companyId <= 0) {
+            return '';
+        }
+        $fromCrm = ContactSync::getNormalizedCompanyDiscount($companyId);
+        if ($fromCrm !== '') {
+            return $fromCrm;
+        }
+        if (\array_key_exists($ufDiscountKey, $arFields)) {
+            return ContactSync::normalizeDiscountFromRaw($arFields[$ufDiscountKey]);
+        }
+
+        return '';
+    }
+
+    /**
+     * Скаляр UF компании для исходящего payload: при событии обновления приоритет у значения из `$arFields`.
+     *
+     * @param array<string, mixed> $arFields
+     * @param array<string, mixed> $company
+     */
+    private static function extractCompanyUfScalarForOutbound(array $arFields, array $company, string $ufKey)
+    {
+        $raw = \array_key_exists($ufKey, $arFields) ? $arFields[$ufKey] : ($company[$ufKey] ?? null);
+        if (\is_array($raw)) {
+            if (\array_key_exists('VALUE', $raw)) {
+                return $raw['VALUE'];
+            }
+            $first = \reset($raw);
+            if (\is_array($first) && \array_key_exists('VALUE', $first)) {
+                return $first['VALUE'];
+            }
+        }
+
+        return $raw;
     }
 
     private static function isTruthy($value): bool

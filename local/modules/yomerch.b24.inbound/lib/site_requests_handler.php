@@ -437,12 +437,41 @@ foreach ($syncTokenCandidates as $candidate) {
     }
 }
 
+/** Контекст для лога до успешной проверки токена — иначе событие payload.received недостижимо при 403. */
+$buildSyncForbiddenDiag = static function () use ($requestPayload, $rawInput, $contentType, $buildContractLogBody): array {
+    $base = [
+        'request_method' => (string)($_SERVER['REQUEST_METHOD'] ?? ''),
+        'request_uri' => (string)($_SERVER['REQUEST_URI'] ?? ''),
+        'content_type' => $contentType,
+        'action' => (string)($requestPayload['ACTION'] ?? ''),
+        'crm_method_field' => (string)($requestPayload['METHOD'] ?? ''),
+        'payload_keys' => array_keys($requestPayload),
+    ];
+    $rp = $requestPayload['PARAMS'] ?? null;
+    if (is_string($rp) && $rp !== '') {
+        $decodedRp = json_decode($rp, true);
+        if (is_array($decodedRp)) {
+            $rp = $decodedRp;
+        }
+    }
+    if (is_array($rp)) {
+        $base['params_keys'] = array_keys($rp);
+        if (isset($rp['fields']) && is_array($rp['fields'])) {
+            $base['fields_keys'] = array_keys($rp['fields']);
+        }
+    }
+
+    return array_merge($base, $buildContractLogBody($rawInput, $contentType, $requestPayload));
+};
+
 if ($secret !== '') {
     if ($resolvedInboundToken === '' || !hash_equals($secret, $resolvedInboundToken)) {
-        $inboundTrace('site_requests_handler.reject.sync_forbidden', [
+        $reasonDetail = $resolvedInboundToken === '' ? 'missing_or_empty_token' : 'token_mismatch';
+        $inboundTrace('site_requests_handler.reject.sync_forbidden', array_merge([
             'token_present' => $resolvedInboundToken !== '',
             'via_header' => $headerToken !== '',
-        ]);
+            'reason_detail' => $reasonDetail,
+        ], $buildSyncForbiddenDiag()));
         http_response_code(403);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode([
@@ -454,9 +483,11 @@ if ($secret !== '') {
     }
 
     if ($requireHeaderOnly && $headerToken === '') {
-        $inboundTrace('site_requests_handler.reject.sync_forbidden', [
+        $inboundTrace('site_requests_handler.reject.sync_forbidden', array_merge([
             'reason' => 'header_token_required',
-        ]);
+            'token_present' => true,
+            'via_header' => false,
+        ], $buildSyncForbiddenDiag()));
         http_response_code(403);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode([

@@ -2,6 +2,7 @@
 namespace OnlineService;
 
 use OnlineService\Rest\RestCall;
+use OnlineService\Sync\UfMap;
 
 class LocalApplicationHandler{
     protected $B24;
@@ -164,7 +165,8 @@ class LocalApplicationHandler{
     /**
      * Обработчик запроса DELETE_CONTACT
      * $this->request = [
-     *  'ID' => id контакта в crm,
+     *  'ID' => значение UF `contact.delete_site_ref` (или числовой CRM ID для legacy),
+     *  'B24_ID' => приоритетный числовой ID контакта в CRM (рекомендуется с outbound ContactSync),
      *  'ACTION'
      * ];
      */
@@ -172,8 +174,13 @@ class LocalApplicationHandler{
         \Bitrix\Main\Loader::requireModule('crm');
         \Bitrix\Main\Loader::requireModule('main');
 
-        if (\CCrmContact::Exists($this->request['ID'])) {
-            $contactId = $this->request['ID'];
+        $b24Id = (int)($this->request['B24_ID'] ?? 0);
+        if ($b24Id > 0 && \CCrmContact::Exists($b24Id)) {
+            $contactId = $b24Id;
+        } else {
+            $contactId = $this->resolveDeleteContactCrmId($this->request['ID'] ?? null);
+        }
+        if ($contactId > 0) {
 
             // Получаем информацию о контакте перед удалением
             $contactInfo = \CCrmContact::GetByID($contactId);
@@ -241,9 +248,49 @@ class LocalApplicationHandler{
         } else {
             return [
                 'success' => false,
-                'data' => 'Контакт не существует'
+                'data' => 'Контакт не существует',
+                'debug' => [
+                    'incoming_id' => $this->request['ID'] ?? null,
+                    'lookup' => 'by CRM ID or UF contact.delete_site_ref',
+                ],
             ];
         }
+    }
+
+    /**
+     * DELETE_CONTACT: `ID` — значение UF {@see UfMap::get('contact.delete_site_ref')} или числовой CRM ID (обратная совместимость).
+     *
+     * @param mixed $incomingId
+     */
+    private function resolveDeleteContactCrmId($incomingId): int
+    {
+        $crmId = (int)(is_scalar($incomingId) ? $incomingId : 0);
+        if ($crmId > 0 && \CCrmContact::Exists($crmId)) {
+            return $crmId;
+        }
+
+        $ref = is_scalar($incomingId) ? trim((string)$incomingId) : '';
+        if ($ref === '') {
+            return 0;
+        }
+
+        try {
+            $uf = UfMap::get('contact.delete_site_ref');
+        } catch (\Throwable $e) {
+            return 0;
+        }
+
+        if (!class_exists(\Bitrix\Crm\ContactTable::class)) {
+            return 0;
+        }
+
+        $row = \Bitrix\Crm\ContactTable::getList([
+            'filter' => ['=' . $uf => $ref],
+            'select' => ['ID'],
+            'limit' => 1,
+        ])->fetch();
+
+        return is_array($row) ? (int)($row['ID'] ?? 0) : 0;
     }
 
     private function handleAddContact(){
