@@ -19,7 +19,7 @@
 | METHOD | Назначение | Ожидаемые `PARAMS` (ключевые поля) |
 |--------|------------|-------------------------------------|
 | `crm.requisite.list` | Список реквизитов | `filter` (массив), опционально `select`; при фильтре по `RQ_INN` без `ENTITY_TYPE_ID` принудительно добавляется `ENTITY_TYPE_ID = 4` |
-| `crm.company.add` | Создание компании | `fields` — массив полей для `CCrmCompany::Add` |
+| `crm.company.add` | Создание компании | `fields` — массив полей для `CCrmCompany::Add`. **Если в `fields` есть `RQ_INN` и в CRM уже есть компания с этим ИНН:** при **ровно одной** совпавшей компании и включённом UF **`company.head_company_flag`** (`UF_CRM_1758028888`) создаётся **новая дочерняя** компания: в UF **`company.holding`** (`UF_CRM_1758028816`) пишется CRM ID головной компании; затем UF **`company.holding_group_members`** (`UF_CRM_1776426878`) обновляется **одинаковым списком** (головная + все дочерние) на всех участниках холдинга. Ответ: `reason_code`: `company_add_child_under_head_inn`, `data`: `head_company_id`, `child_company_id`, `holding_member_company_ids`. Если головной признак **выключен** — новая компания **не** создаётся: `success`: `1`, `result` = CRM ID найденной компании, `reason_code`: `company_add_use_existing_for_contact`, `data.attach_contact_only`: `true` (дальше сайт привязывает контакт через `crm.contact.*`). Несколько компаний с одним ИНН — `company_add_ambiguous_inn`. |
 | `crm.company.get` | Чтение компании | `id` — числовой ID |
 | `crm.company.update` | Обновление компании | `id`, `fields` |
 | `crm.requisite.add` | Создание реквизита | `fields` |
@@ -34,7 +34,7 @@
 
 Унифицированно:
 
-- Успех: `success`: `1`, полезная нагрузка чаще в `result` (как возвращает соответствующий helper).
+- Успех: `success`: `1`, полезная нагрузка чаще в `result` (как возвращает соответствующий helper); для `crm.company.add` при существующей компании по ИНН дополнительно могут быть `reason_code` и `data` (см. таблицу выше).
 - Ошибка Bitrix или исключение: `success`: `0`, текст в `error`.
 
 ## Контракт данных для сайта

@@ -8,6 +8,10 @@
 
 - Реализация на портале B24: модуль **`local/modules/yomerch.b24.inbound/`** (`lib/site_requests_handler.php`, `lib/InboundEndpoint.php`).
 
+## Диагностика: `sync_forbidden` + `missing_or_empty_token`
+
+В логе видно `token_present: false`, `via_header: false`, в `payload_keys` **нет** ключей токена — сайт не прислал секрет. Это **не** связано с заполнением UF в CRM: токен задаётся только в HTTP (заголовок **`X-SYNC-TOKEN`** или поля **`sync_token`** / **`SYNC_TOKEN`** / **`_TOKEN`** / **`_SYNC_TOKEN`** в теле). Исправление — на стороне клиента, вызывающего `endpoint.php`.
+
 ## Базовые требования
 
 - Проверять источник запроса и секрет (если используется общий токен).
@@ -39,6 +43,7 @@ Remaining Tier B vs runtime gaps (**ACTION catalog breadth vs dispatcher** — p
 - Основной sink: `local/logs/inbound-b24.log`.
 - Fallback sink при недоступности основного: `/tmp/inbound-b24.log`.
 - Формат: одна JSON-структура контекста на строку (`[trace] <event> {...}`).
+- Самодиагностика окружения (права на лог, наличие `site_sync_settings.local.php`): `local/inbound-test.php` (веб только для администратора; см. ADR R11).
 
 ### Обязательный request-событие
 
