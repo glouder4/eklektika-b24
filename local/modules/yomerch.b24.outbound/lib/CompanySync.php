@@ -277,6 +277,15 @@ class CompanySync extends OutboundRequest
         $ufCompanyDiscount = self::uf(self::UF_COMPANY_DISCOUNT);
         $ufCompanyHoldingCompanies = self::uf(self::UF_COMPANY_HOLDING_COMPANIES);
         $isHead = self::isTruthy($company[$ufCompanyIsHead] ?? null);
+        $isHeadPortalCompany = self::isTruthy(
+            self::extractCompanyUfScalarForOutbound($arFields, $company, $ufHeadPortal)
+        );
+        if ($isHeadPortalCompany) {
+            self::ensureHoldingUfCatalogElementForPortalHeadCompany(
+                $companyId,
+                (string)($arFields['TITLE'] ?? $company['TITLE'] ?? '')
+            );
+        }
 
         $headCompanyIblockId = false;
         if ($isHead) {
@@ -296,14 +305,26 @@ class CompanySync extends OutboundRequest
         ) {
             self::syncHoldingCompaniesBindingField($companyId, $company);
         }
-        // UF участников холдинга — только при изменении «головная по порталу» или UF холдинга (не при ручной правке; см. OnBefore).
+        $holdingClusterElementId = self::resolveHoldingIblockElementForOutboundCluster($companyId, $company);
+        $holdingMembersSyncOnChildSave = $holdingClusterElementId > 0
+            && !$isHeadPortalCompany
+            && !$isHead;
+        // UF участников холдинга: смена «головная по порталу»/холдинга в запросе, либо любое сохранение компании с
+        // включённым {@see UF_COMPANY_HEAD_PORTAL} (после {@see ensureHoldingUfCatalogElementForPortalHeadCompany} есть
+        // элемент ИБ 34 с B24_COMPANY_ID), либо сохранение дочерней (есть резолвящийся кластер по UF холдинга, без
+        // флагов головной) — пересчёт списка головная + дочерние на всех участниках.
         if (
             array_key_exists($ufHeadPortal, $arFields)
             || array_key_exists($ufCompanyHolding, $arFields)
+            || $isHeadPortalCompany
+            || $holdingMembersSyncOnChildSave
         ) {
             self::syncHoldingGroupMembersAcrossCluster($companyId, $company);
         }
-        if (
+        if ($isHeadPortalCompany) {
+            $discountValue = (string)($company[$ufCompanyDiscount] ?? '');
+            self::propagateHeadDiscountToChildrenAndContacts($companyId, $discountValue);
+        } elseif (
             $isHead
             && array_key_exists($ufCompanyDiscount, $arFields)
         ) {
@@ -474,6 +495,7 @@ class CompanySync extends OutboundRequest
             foreach ($contactIds as $contactId) {
                 $contactFields = [
                     self::uf('company.contact_marketing_agent') => $isMarketingAgentRaw,
+                    self::uf('contact.inherits_company_is_marketing_agent') => $isMarketingAgentRaw,
                 ];
                 $bCompare = true;
                 $updateOptions = [
@@ -993,7 +1015,10 @@ class CompanySync extends OutboundRequest
         if ($triggerCompanyId <= 0) {
             return 0;
         }
-        if (self::isTruthy($company[self::uf(self::UF_COMPANY_IS_HEAD)] ?? null)) {
+        if (
+            self::isTruthy($company[self::uf(self::UF_COMPANY_IS_HEAD)] ?? null)
+            || self::isTruthy($company[self::uf(self::UF_COMPANY_HEAD_PORTAL)] ?? null)
+        ) {
             $headEl = self::findHeadElementInIblock($triggerCompanyId);
 
             return $headEl ? (int) $headEl : 0;
@@ -1257,8 +1282,12 @@ class CompanySync extends OutboundRequest
     private static function resolveHoldingCompanyB24Ids(int $companyId, array $company): array
     {
         $holdingElementId = 0;
-        if (self::isTruthy($company[self::uf(self::UF_COMPANY_IS_HEAD)] ?? null)) {
-            $holdingElementId = (int)self::findHeadElementInIblock($companyId);
+        if (
+            self::isTruthy($company[self::uf(self::UF_COMPANY_IS_HEAD)] ?? null)
+            || self::isTruthy($company[self::uf(self::UF_COMPANY_HEAD_PORTAL)] ?? null)
+        ) {
+            $headEl = self::findHeadElementInIblock($companyId);
+            $holdingElementId = $headEl ? (int) $headEl : 0;
         } else {
             $holdingElementId = self::resolveHoldingElementId(
                 self::extractHoldingRefValue($company[self::uf(self::UF_COMPANY_HOLDING)] ?? null)

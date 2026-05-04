@@ -4,6 +4,7 @@ namespace OnlineService\Sync\FromSite;
 
 use OnlineService\Sync\UfMap;
 use OnlineService\Sync\ToSite\CompanySync;
+use OnlineService\Sync\ToSite\ContactSync;
 
 /**
  * Inbound channel (site -> CRM).
@@ -532,6 +533,9 @@ class InboundEndpoint
         if ($id <= 0) {
             return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
         }
+        if (\class_exists(ContactSync::class)) {
+            ContactSync::sendContactToSiteNow($id);
+        }
 
         return ['success' => 1, 'result' => $id];
     }
@@ -566,6 +570,9 @@ class InboundEndpoint
             if (class_exists(\OnlineService\Sync\ToSite\ContactSync::class)) {
                 \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(false);
             }
+        }
+        if ($ok && \class_exists(ContactSync::class)) {
+            ContactSync::sendContactToSiteNow($id);
         }
 
         return $ok

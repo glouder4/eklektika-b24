@@ -161,8 +161,10 @@ class ContactSync extends OutboundRequest
 
         $directorUf = self::uf(self::UF_CONTACT_IS_DIRECTOR);
         $ufContactSiteUserId = self::uf('contact.site_user_id');
+        $ufSecondManagerSource = self::uf('contact.site_sync_value');
         $ufCompanyDiscount = self::uf(self::UF_COMPANY_DISCOUNT);
         $directorRaw = self::extractSingleUfValue($contact, $directorUf);
+        $secondManagerRaw = self::extractSingleUfValue($contact, $ufSecondManagerSource);
 
         $params = [
             'ACTION' => 'UPDATE_CONTACT',
@@ -173,9 +175,9 @@ class ContactSync extends OutboundRequest
             'SECOND_NAME' => (string)($contact['SECOND_NAME'] ?? ''),
             'WORK_POSITION' => (string)($contact['POST'] ?? ''),
             'PERSONAL_BIRTHDAY' => (string)($contact['BIRTHDATE'] ?? ''),
-            // Ключи оставляем для совместимости с обработчиком на сайте.
-            'ASSIGNED_MANAGER' => '',
-            'SECOND_MANAGER' => '',
+            // Сайт: `ASSIGNED_MANAGER` = `ASSIGNED_BY_ID` контакта; `SECOND_MANAGER` = UF `contact.site_sync_value`.
+            'ASSIGNED_MANAGER' => (int)($contact['ASSIGNED_BY_ID'] ?? 0),
+            'SECOND_MANAGER' => $secondManagerRaw !== null ? $secondManagerRaw : '',
             $directorUf => $directorRaw,
             'UF_IS_DIRECTOR' => self::ufToDirectorInt($directorRaw),
         ];
@@ -188,6 +190,27 @@ class ContactSync extends OutboundRequest
         }
 
         OutboundContactMarketingForSite::mergeIntoUpdateContactPost($params, $contact);
+
+        $inheritsUfKey = self::uf('contact.inherits_company_is_marketing_agent');
+        $inheritsRaw = self::extractSingleUfValue($contact, $inheritsUfKey);
+        if ($inheritsRaw !== null && $inheritsRaw !== '') {
+            $params['ACTIVE'] = self::crmScalarToActiveYn($inheritsRaw);
+        } elseif (
+            isset($params['IS_MARKETING_AGENT'])
+            && ($params['IS_MARKETING_AGENT'] === 'Y' || $params['IS_MARKETING_AGENT'] === 'N')
+        ) {
+            $params['ACTIVE'] = (string) $params['IS_MARKETING_AGENT'];
+        } else {
+            $params['ACTIVE'] = 'N';
+        }
+
+        $advUfKey = self::uf('company.contact_marketing_agent');
+        if (\array_key_exists($advUfKey, $params) && $params[$advUfKey] !== null && $params[$advUfKey] !== '') {
+            $params['UF_ADVERTISING_AGENT'] = $params[$advUfKey];
+        } else {
+            $advRaw = self::extractSingleUfValue($contact, $advUfKey);
+            $params['UF_ADVERTISING_AGENT'] = $advRaw !== null && $advRaw !== '' ? $advRaw : '';
+        }
 
         // По умолчанию отправляем пустое значение: это позволяет сайту корректно очищать скидку.
         $params[$ufCompanyDiscount] = '';
@@ -567,11 +590,51 @@ class ContactSync extends OutboundRequest
     }
 
     /**
+     * Поиск CRM ID контакта в структурах события (в т.ч. вложенные `FIELDS` / `data`), без широкого обхода всего дерева.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function extractContactIdFromNestedFieldsArray(array $data, int $depth): int
+    {
+        if ($depth > 8) {
+            return 0;
+        }
+        foreach (['ID', 'id', 'CONTACT_ID', 'contactId'] as $k) {
+            if (\array_key_exists($k, $data)) {
+                $id = (int) $data[$k];
+                if ($id > 0) {
+                    return $id;
+                }
+            }
+        }
+        foreach (['FIELDS', 'fields', 'arFields', 'DATA', 'data'] as $nestedKey) {
+            if (!isset($data[$nestedKey]) || !\is_array($data[$nestedKey])) {
+                continue;
+            }
+            $id = self::extractContactIdFromNestedFieldsArray($data[$nestedKey], $depth + 1);
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
      * В разных обработчиках CRM ID может приходить в разных ключах.
      */
     private static function extractContactIdFromArgs(array $args): int
     {
         foreach ($args as $arg) {
+            if ($arg instanceof \Bitrix\Main\Event) {
+                $params = $arg->getParameters();
+                $id = \is_array($params) ? self::extractContactIdFromNestedFieldsArray($params, 0) : 0;
+                if ($id > 0) {
+                    return $id;
+                }
+
+                continue;
+            }
             if (is_scalar($arg)) {
                 $id = (int)$arg;
                 if ($id > 0) {
@@ -596,6 +659,15 @@ class ContactSync extends OutboundRequest
                 if ($id > 0) {
                     return $id;
                 }
+            }
+        }
+        foreach ($args as $arg) {
+            if (!\is_array($arg)) {
+                continue;
+            }
+            $id = self::extractContactIdFromNestedFieldsArray($arg, 0);
+            if ($id > 0) {
+                return $id;
             }
         }
 
@@ -630,6 +702,32 @@ class ContactSync extends OutboundRequest
      *
      * @param mixed $v
      */
+    /**
+     * Сайт: `ACTIVE` (`Y`/`N`) из UF «наследует маркетинговый признак компании».
+     *
+     * @param mixed $raw
+     */
+    private static function crmScalarToActiveYn($raw): string
+    {
+        if ($raw === null || $raw === '' || $raw === false) {
+            return 'N';
+        }
+        if ($raw === true || $raw === 1 || $raw === '1' || $raw === 'Y' || $raw === 'y') {
+            return 'Y';
+        }
+        if (\is_numeric($raw)) {
+            return ((float) $raw) != 0.0 ? 'Y' : 'N';
+        }
+        if (\is_string($raw)) {
+            $t = \strtolower(\trim($raw));
+            if (\in_array($t, ['y', 'yes', 'true', '1'], true)) {
+                return 'Y';
+            }
+        }
+
+        return 'N';
+    }
+
     private static function ufToDirectorInt($v): int
     {
         if ($v === null || $v === '' || $v === false) {

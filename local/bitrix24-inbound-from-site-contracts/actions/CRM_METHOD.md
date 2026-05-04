@@ -24,8 +24,8 @@
 | `crm.company.update` | Обновление компании | `id`, `fields` |
 | `crm.requisite.add` | Создание реквизита | `fields` |
 | `crm.requisite.update` | Обновление реквизита | `id`, `fields` |
-| `crm.contact.add` | Создание контакта | `fields` |
-| `crm.contact.update` | Обновление контакта | `id`, `fields` (мультиполя для контактов нормализуются в формат `n0`, `n1`, … внутри обработчика) |
+| `crm.contact.add` | Создание контакта | `fields`. Во время `CCrmContact::Add` исходящие CRM-события контакта подавляются (`ContactSync::suspendOutbound`), поэтому после успешного создания явно вызывается **`ContactSync::sendContactToSiteNow`** — на сайт уходит **`UPDATE_CONTACT`**. |
+| `crm.contact.update` | Обновление контакта | `id`, `fields` (мультиполя для контактов нормализуются в формат `n0`, `n1`, … внутри обработчика). Аналогично add: при `Update` событие `onAfter` не шлёт payload из-за suspend; после успешного обновления вызывается **`sendContactToSiteNow`** → **`UPDATE_CONTACT`** на сайт. |
 | `crm.contact.company.add` | Привязка контакта к компании | `id` — контакт, `fields.COMPANY_ID` — компания |
 
 Иные значения `METHOD` возвращают ошибку с текстом `Unsupported CRM METHOD: …` и `reason_code`: `unsupported_crm_method`.

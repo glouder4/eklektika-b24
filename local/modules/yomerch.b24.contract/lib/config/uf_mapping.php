@@ -26,9 +26,15 @@ return [
         'legan_mobile_phone' => 'UF_CRM_1777069676348',
     ],
     'contact' => [
+        /** Зеркало `company.is_marketing_agent` (UF_CRM_1675675211485) при сохранении компании в CRM (`CompanySync::onAfterCompanyUpdate`). */
+        'inherits_company_is_marketing_agent' => 'UF_CRM_1698752707853',
         'site_user_id' => 'UF_CRM_1776075126830',
         'is_director' => 'UF_CRM_1777068292434',
         /** Идентификатор на сайт: DELETE_CONTACT `ID`; UPDATE_CONTACT `ID` и fallback `OS_COMPANY_B24_ID` без компании. */
         'delete_site_ref' => 'UF_CRM_3804624445748',
+        /**
+         * UF контакта → в теле исходящего `UPDATE_CONTACT` передаётся как **`SECOND_MANAGER`** (`ContactSync::sendContactToSite`).
+         */
+        'site_sync_value' => 'UF_CRM_1757682312',
     ],
 ];
