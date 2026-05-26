@@ -21,5 +21,3 @@ foreach ($moduleIncludeFiles as $moduleIncludeFile) {
 if (class_exists(\OnlineService\Site\CatalogPriceFloor::class)) {
     \OnlineService\Site\CatalogPriceFloor::markCompositeNonCacheableForAuthorizedCatalog();
 }
-
-$GLOBALS['OS_BREADCRUMBS_ADD_CONTAINER'] = 'Y';

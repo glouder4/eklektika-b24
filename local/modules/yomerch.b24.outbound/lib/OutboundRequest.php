@@ -217,14 +217,6 @@ class OutboundRequest
         // Для UPDATE_COMPANY дублируем CONTACT_IDS в OS_COMPANY_USERS / LEGAN_ENTITY_USERS.
         // CONTACT_IDS — идентификаторы на сайте (UF contact.delete_site_ref и т.п.), не CRM CONTACT_ID.
         if (($params['ACTION'] ?? '') === 'UPDATE_COMPANY') {
-            self::writeOutboundTrace('sendRequest update_company requisites keys', [
-                'correlation_id' => (string)$trace['correlation_id'],
-                'cutover_label' => (string)$trace['cutover_label'],
-                'has_OS_REQUSITES_FILE' => \array_key_exists('OS_REQUSITES_FILE', $params),
-                'type_OS_REQUSITES_FILE' => \array_key_exists('OS_REQUSITES_FILE', $params) ? \gettype($params['OS_REQUSITES_FILE']) : null,
-                'has_OS_REQUISITES_FILE' => \array_key_exists('OS_REQUISITES_FILE', $params),
-                'type_OS_REQUISITES_FILE' => \array_key_exists('OS_REQUISITES_FILE', $params) ? \gettype($params['OS_REQUISITES_FILE']) : null,
-            ]);
             $contactIds = self::normalizePositiveIntList($params['CONTACT_IDS'] ?? []);
             if ($contactIds !== []) {
                 $params['OS_COMPANY_USERS'] = $contactIds;

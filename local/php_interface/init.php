@@ -1,138 +1,6 @@
 <?php
-	ini_set('memory_limit', '2048M');
-// /home/bitrix/ext_www/bitrix.yomerch.ru/local/logs/bitrix-debug.log
-
-define('EK_COMPANY_UPDATER_DEBUG', false);
-define('LOG_FILENAME', $_SERVER['DOCUMENT_ROOT'].'/local/logs/bitrix-debug.log');
-
-define('BX_SALT', 'crm_yomerch');
-ini_set('session.cookie_domain', 'bitrix.yomerch.ru');
-\Bitrix\Main\Config\Option::set('main', 'cookie_domain', 'bitrix.yomerch.ru');
-\Bitrix\Main\Config\Option::set('main', 'use_domain_without_dot_for_cookie', 'Y');
-
-session_set_cookie_params([
-    'path' => '/',
-    'domain' => 'yomerch.ru',
-    'secure' => true,
-    'httponly' => true,
-    'samesite' => 'Strict'
-]);
-
-    // В самом начале, после подключения пролога
-    if (function_exists('header_remove')) {
-        // Разрешаем показывать Server Timing
-        header_remove('Server-Timing');
-    }
-
-    // Добавляем измерение времени для разных этапов
-    $GLOBALS['BX_TIMINGS'] = [];
-
-    // Перехватываем время начала запроса
-    $GLOBALS['BX_TIMINGS']['start'] = microtime(true);
-
-    // Регистрируем завершение работы ядра Bitrix
-    AddEventHandler('main', 'OnEpilog', 'OnEpilogHandler');
-    function OnEpilogHandler()
-    {
-        $timings = $GLOBALS['BX_TIMINGS'];
-        $total = microtime(true) - $timings['start'];
-
-        // Безопасное получение времени SQL запросов
-        global $DB;
-        $sql_time = 0;
-
-        if (is_object($DB)) {
-            // Пробуем разные варианты названия метода
-            if (method_exists($DB, 'getQueryTime')) {
-                $sql_time = $DB->getQueryTime();
-            } elseif (method_exists($DB, 'GetQueryTime')) {
-                $sql_time = $DB->GetQueryTime();
-            } elseif (method_exists($DB, 'getSqlQueryTime')) {
-                $sql_time = $DB->getSqlQueryTime();
-            } elseif (property_exists($DB, 'sql_time')) {
-                $sql_time = $DB->sql_time;
-            } elseif (defined('BX_SQL_TIME')) {
-                $sql_time = BX_SQL_TIME;
-            }
-        }
-
-        // Формируем заголовок Server-Timing
-        $header = sprintf(
-            'total;dur=%f, sql;dur=%f, php;dur=%f',
-            $total * 1000,
-            $sql_time * 1000,
-            ($total - $sql_time) * 1000
-        );
-
-        header("Server-Timing: $header");
-    }
-
-    //session_set_cookie_params(10800);
-
-	//ini_set('max_execution_time', 300);
-    $is_test_server = false;
-    // YOMERRCH24_SITE_URL задаётся после merge site_sync_settings* (см. ниже), чтобы site_url из модуля имел приоритет.
-	define('URL_B24', ($is_test_server) ? 'https://testbitrix.yomerch.ru/' : 'https://bitrix.yomerch.ru/');
 
 
-
-//$eventManager = \Bitrix\Main\EventManager::getInstance();
-//
-//$handler = \Bitrix\Main\EventManager::getInstance()->addEventHandler(
-//    "crm",
-//    "onCrmDynamicItemUpdate_133",
-//    'handle_dynamic_update'
-//);
-
-//\Bitrix\Main\EventManager::getInstance()->addEventHandlerCompatible(
-//    "iblock",
-//    "OnIBlockElementSetPropertyValuesEx",
-//    'handle_props'
-//);
-//\Bitrix\Main\EventManager::getInstance()->addEventHandlerCompatible(
-//    "iblock",
-//    "OnBeforeIBlockElementUpdate",
-//    'handle_iblock_update'
-//);
-//
-//$handler = \Bitrix\Main\EventManager::getInstance()->addEventHandler(
-//    "crm",
-//    "onCrmDynamicItemAdd_133",
-//    'handle_dynamic_update'
-//);
-//
-function handle_dynamic_update(\Bitrix\Main\Event $event) {
-    $item = $event->getParameter('item');
-
-    file_put_contents(__DIR__.'/d_log.txt', print_r($item->toArray(), true), FILE_APPEND);
-}
-
-//function handle_props($ELEMENT_ID, $IBLOCK_ID, &$PROPERTY_VALUES, $propertyList, &$arDBProps) {
-//    $s = [
-//        'vals' => $PROPERTY_VALUES,
-//        'ar_prop' => $propertyList,
-//        'db_props' => $arDBProps
-//    ];
-//    file_put_contents(__DIR__.'/p_log.txt', print_r($s, true), FILE_APPEND);
-//
-//    if($ELEMENT_ID == 6957) {
-//        foreach ($arDBProps[114] as $id => &$pr) {
-//            $pr['VALUE'] = $pr['VALUE'].'1';
-//        }
-////        $arDBProps[114][103965]['VALUE'] = $arDBProps[114][103965]['VALUE'].'1';
-//        file_put_contents(__DIR__.'/p_log.txt', print_r($s, true), FILE_APPEND);
-//    }
-//
-//
-//}
-
-function handle_iblock_update(&$arFields) {
-//    file_put_contents(__DIR__.'/p_log.txt', print_r($arFields, true), FILE_APPEND);
-
-//    foreach ($arFields['PROPERTY_VALUES'][114] as $id => &$pr) {
-//        $pr['VALUE'] = $pr['VALUE'].'1';
-//    }
-}
 
 /*======= Подмена сервисов битрикса ========*/
 //define('CRM_USE_CUSTOM_SERVICES', 1);
@@ -166,11 +34,11 @@ function pre($o) {
 
 /*======= Уведомления о смене статуса сделки ========*/
 \Bitrix\Main\Loader::includeModule('crm');
-\Bitrix\Main\EventManager::getInstance()->addEventHandlerCompatible(
+/*\Bitrix\Main\EventManager::getInstance()->addEventHandlerCompatible(
     'crm',
     'OnBeforeCrmDealUpdate',
     'ek_onBeforeDealUpdateNotify'
-);
+);*/
 
 function ek_onBeforeDealUpdateNotify(&$arFields) {
     if (!\Bitrix\Main\Loader::includeModule('crm')) return;
@@ -339,4 +207,6 @@ unset(
 );
 
 require_once __DIR__ . '/../modules/bootstrap.php'; // кастомные include.php, в т.ч. yomerch.b24.*
+
+
 

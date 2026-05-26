@@ -4,6 +4,21 @@ ErrorDocument 404 /404.php
 #php_value session.gc_maxlifetime 10800
 #php_value session.cookie_lifetime 10800
 
+php_value session.gc_maxlifetime 172800
+php_value session.cookie_lifetime 172800
+php_value session.gc_probability 1
+php_value session.gc_divisor 5000
+
+# Разрешаем сессии для AJAX
+SetEnvIf Request_URI "/ajax/" SESSION_NEEDED=1
+SetEnvIf Request_URI "/services/main/ajax.php" SESSION_NEEDED=1
+
+# Отключаем кэш для AJAX
+<FilesMatch "ajax\.php$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+</FilesMatch>
+
 <IfModule mod_rewrite.c>
 	Options +FollowSymLinks
 	RewriteEngine On

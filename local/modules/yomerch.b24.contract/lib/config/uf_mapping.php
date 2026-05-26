@@ -24,6 +24,10 @@ return [
         'legal_address' => 'UF_CRM_1777120939583',
         'legan_main_phone' => 'UF_CRM_1777069666894',
         'legan_mobile_phone' => 'UF_CRM_1777069676348',
+        /**
+         * Параллель contact.site_sync_value: inbound UPDATE_COMPANY пишет в CRM и дублирует на контакты UF contact.site_sync_value.
+         */
+        'site_sync_value' => 'UF_CRM_1778601096',
     ],
     'contact' => [
         /** Зеркало `company.is_marketing_agent` (UF_CRM_1675675211485) при сохранении компании в CRM (`CompanySync::onAfterCompanyUpdate`). */

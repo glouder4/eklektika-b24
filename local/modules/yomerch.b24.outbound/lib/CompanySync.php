@@ -6,6 +6,7 @@ use OnlineService\Sync\UfMap;
 use OnlineService\Sync\Contract\CompanySyncNormalizeService;
 use OnlineService\Sync\Contract\CompanySyncPolicyService;
 use OnlineService\Sync\Contract\CompanySyncReadService;
+use OnlineService\Sync\Contract\CompanyPhoneUfMultifieldSync;
 
 // UF-карта: модуль yomerch.b24.contract → lib/config/uf_mapping.php.
 class CompanySync extends OutboundRequest
@@ -41,6 +42,14 @@ class CompanySync extends OutboundRequest
     private const MAX_HOLDING_GROUP_CLUSTER_MEMBERS = 2000;
     /** @var array<int, bool> */
     private static array $skipOutboundForCompanyIds = [];
+
+    /** Подавление onAfter* (inbound CRM_METHOD create и т.п.) без ID компании до Add. */
+    private static bool $suspendOutbound = false;
+
+    public static function suspendOutbound(bool $state): void
+    {
+        self::$suspendOutbound = $state;
+    }
 
     /**
      * UF «участники холдинга» ({@see UF_COMPANY_HOLDING_GROUP_MEMBERS}) меняется только из синхронизации
@@ -117,14 +126,21 @@ class CompanySync extends OutboundRequest
             return '';
         }
 
-        if (\is_array($multi) && \array_key_exists('VALUE', $multi)) {
-            return (string)($multi['VALUE'] ?? '');
+        if (\is_array($multi) && \array_key_exists('VALUE', $multi) && !isset($multi[0])) {
+            return \trim((string) ($multi['VALUE'] ?? ''));
         }
 
         if (\is_array($multi)) {
             foreach ($multi as $row) {
-                if (\is_array($row) && \array_key_exists('VALUE', $row)) {
-                    return (string)($row['VALUE'] ?? '');
+                if (!\is_array($row)) {
+                    continue;
+                }
+                if (!empty($row['DELETE']) || !empty($row['delete'])) {
+                    continue;
+                }
+                $v = \trim((string) ($row['VALUE'] ?? ''));
+                if ($v !== '') {
+                    return $v;
                 }
             }
         }
@@ -227,11 +243,21 @@ class CompanySync extends OutboundRequest
             }
         }
 
+        CompanyPhoneUfMultifieldSync::enrichArFieldsBeforeSave($companyId, $arFields);
+
         return true;
     }
 
     public static function onAfterCompanyUpdate(&$arFields): bool
     {
+        if (self::$suspendOutbound) {
+            self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate skip_suspend_outbound', [
+                'company_id' => (int)($arFields['ID'] ?? 0),
+            ]);
+
+            return true;
+        }
+
         if (!\Bitrix\Main\Loader::includeModule('crm')) {
             return true;
         }
@@ -265,6 +291,13 @@ class CompanySync extends OutboundRequest
 
             return true;
         }
+
+        CompanyPhoneUfMultifieldSync::syncStoredCompanyIfNeeded($companyId);
+        $company = $readService->loadCompanySnapshot($companyId);
+        if (!$company) {
+            return true;
+        }
+
         self::writeOutboundTrace('CompanySync::phaseA_read_snapshot', [
             'company_id' => $companyId,
             'has_rq_inn' => !empty($company['REQUISITES']['RQ_INN']),
@@ -349,6 +382,14 @@ class CompanySync extends OutboundRequest
         $ufCompanyCity = self::uf('company.city');
         $ufCompanyBusinessScope = self::uf('company.business_scope');
         $ufCompanyLegalAddress = self::uf('company.legal_address');
+        $ufCompanySiteSync = self::uf('company.site_sync_value');
+        $ufContactSiteSync = self::uf('contact.site_sync_value');
+        $companyAssignedForContacts = \array_key_exists('ASSIGNED_BY_ID', $arFields)
+            ? (int)$arFields['ASSIGNED_BY_ID']
+            : (int)($company['ASSIGNED_BY_ID'] ?? 0);
+        $companySiteSyncForContacts = self::normalizeCompanyUfMirrorForContactUpdate(
+            self::extractCompanyUfScalarForOutbound($arFields, $company, $ufCompanySiteSync)
+        );
         $isMarketingAgentRaw = self::extractCompanyUfScalarForOutbound(
             $arFields,
             $company,
@@ -376,8 +417,9 @@ class CompanySync extends OutboundRequest
         $siteElementId = (string)$normalizedCompany['site_element_id'];
         $inn = (string)$normalizedCompany['inn'];
         $title = (string)$normalizedCompany['title'];
-        $phone = (string)($company['MULTIFIELDS']['PHONE']['VALUE'] ?? '');
-        $email = (string)($company['MULTIFIELDS']['EMAIL']['VALUE'] ?? '');
+        $phonesOutbound = CompanyPhoneUfMultifieldSync::resolveForOutbound($company);
+        $phone = (string)($phonesOutbound['work'] ?? '');
+        $email = self::extractMultifieldString($company, 'EMAIL');
         $web = (string)$normalizedCompany['web'];
         $city = (string)$normalizedCompany['city'];
         $businessScope = (string)$normalizedCompany['business_scope'];
@@ -399,7 +441,7 @@ class CompanySync extends OutboundRequest
         // CONTACT_IDS / OS_COMPANY_USERS / LEGAN_ENTITY_USERS — идентификаторы на сайте (UF contact.delete_site_ref),
         // не CRM CONTACT_ID. OutboundRequest::sendRequest для UPDATE_COMPANY подставляет OS_* из CONTACT_IDS.
         $companySiteUserIds = self::buildSiteUserIdsForContacts($contactIds);
-        $leganPhones = self::leganPhoneFieldsFromCompany($company);
+        $leganPhones = (array) ($phonesOutbound['uf'] ?? []);
 
         // Сайт (updateCompanyElement) подмешивает только ключи из $codeProps — префикс OS_*.
         // Раньше уходили в основном LEGAN_ENTITY_* без OS_* → свойства элемента не обновлялись.
@@ -436,6 +478,14 @@ class CompanySync extends OutboundRequest
             ],
             $leganPhones
         );
+
+        $crmMultifields = (array) ($phonesOutbound['crm_multifields'] ?? []);
+        if ($crmMultifields !== []) {
+            $params['CRM_MULTIFIELDS'] = $crmMultifields;
+            if (isset($crmMultifields['PHONE']) && \is_array($crmMultifields['PHONE'])) {
+                $params['PHONE'] = $crmMultifields['PHONE'];
+            }
+        }
 
         // Сайт ожидает полный CFile::GetFileArray (в т.ч. SRC) для оригинала/скачивания, не только ID.
         if (!empty($fileInfo) && \is_array($fileInfo)) {
@@ -496,6 +546,8 @@ class CompanySync extends OutboundRequest
                 $contactFields = [
                     self::uf('company.contact_marketing_agent') => $isMarketingAgentRaw,
                     self::uf('contact.inherits_company_is_marketing_agent') => $isMarketingAgentRaw,
+                    'ASSIGNED_BY_ID' => $companyAssignedForContacts,
+                    $ufContactSiteSync => $companySiteSyncForContacts,
                 ];
                 $bCompare = true;
                 $updateOptions = [
@@ -2158,6 +2210,31 @@ class CompanySync extends OutboundRequest
         }
 
         return $raw;
+    }
+
+    /**
+     * Значение UF компании → формат для записи в UF контакта при наследовании (CRM → CRM).
+     *
+     * @param mixed $v
+     * @return mixed
+     */
+    private static function normalizeCompanyUfMirrorForContactUpdate($v)
+    {
+        if ($v === null || $v === false) {
+            return '';
+        }
+        if (!\is_array($v)) {
+            return $v;
+        }
+        if (\array_key_exists('VALUE', $v)) {
+            return self::normalizeCompanyUfMirrorForContactUpdate($v['VALUE']);
+        }
+        if ($v !== [] && \array_keys($v) === \range(0, \count($v) - 1)) {
+            return self::normalizeCompanyUfMirrorForContactUpdate($v[0] ?? '');
+        }
+        $first = \reset($v);
+
+        return self::normalizeCompanyUfMirrorForContactUpdate($first !== false ? $first : '');
     }
 
     private static function isTruthy($value): bool

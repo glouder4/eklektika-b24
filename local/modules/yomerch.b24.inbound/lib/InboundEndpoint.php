@@ -183,6 +183,12 @@ class InboundEndpoint
         $ufCompanySiteElementId = self::uf('company.site_element_id');
         $ufCompanySiteElementIdLegacy = self::uf('company.site_element_id_legacy_alias');
         $ufCompanyCity = self::uf('company.city');
+        $ufCompanySiteSync = self::uf('company.site_sync_value');
+        // Контракт сайта: часть полей приходит вложенным объектом PARAMS (JSON), верхний уровень — ACTION, sync_token и т.д.
+        $paramsBlock = $request['PARAMS'] ?? null;
+        if (\is_array($paramsBlock)) {
+            $request = \array_merge($paramsBlock, $request);
+        }
         $siteElementId = (string)(
             $request[$ufCompanySiteElementId]
             ?? $request[$ufCompanySiteElementIdLegacy]
@@ -242,6 +248,22 @@ class InboundEndpoint
                 'VALUE_TYPE' => 'WORK',
             ]];
         }
+        if (array_key_exists('ASSIGNED_BY_ID', $request)) {
+            $fields['ASSIGNED_BY_ID'] = (int)$request['ASSIGNED_BY_ID'];
+        } elseif (array_key_exists('ASSIGNED_MANAGER', $request)) {
+            // Симметрия с исходящим контактом (ASSIGNED_MANAGER на сайте ↔ ASSIGNED_BY_ID в CRM).
+            $fields['ASSIGNED_BY_ID'] = (int)$request['ASSIGNED_MANAGER'];
+        }
+        if (array_key_exists($ufCompanySiteSync, $request)) {
+            $fields[$ufCompanySiteSync] = $request[$ufCompanySiteSync];
+        } elseif (array_key_exists('SECOND_MANAGER', $request)) {
+            $fields[$ufCompanySiteSync] = $request['SECOND_MANAGER'];
+        }
+
+        $shouldMirrorManagersToContacts = array_key_exists('ASSIGNED_BY_ID', $request)
+            || array_key_exists('ASSIGNED_MANAGER', $request)
+            || array_key_exists($ufCompanySiteSync, $request)
+            || array_key_exists('SECOND_MANAGER', $request);
 
         $result = true;
         if (!empty($fields)) {
@@ -252,6 +274,44 @@ class InboundEndpoint
                 'IS_SYSTEM_ACTION' => true,
                 'DISABLE_USER_FIELD_CHECK' => false,
             ]);
+        }
+
+        if ($result && $shouldMirrorManagersToContacts) {
+            [$assignedFromCompany, $companySiteSyncUf] = self::resolveCompanyManagerMirrorForContacts(
+                $companyId,
+                $ufCompanySiteSync,
+                $fields
+            );
+            $ufContactSiteSync = self::uf('contact.site_sync_value');
+            $contactIds = self::loadCompanyContactIds($companyId);
+            if ($contactIds !== []) {
+                ContactSync::suspendOutbound(true);
+                try {
+                    $contactEntity = new \CCrmContact(false);
+                    foreach ($contactIds as $contactId) {
+                        $contactFields = [
+                            'ASSIGNED_BY_ID' => $assignedFromCompany,
+                            $ufContactSiteSync => $companySiteSyncUf,
+                        ];
+                        $contactEntity->Update(
+                            $contactId,
+                            $contactFields,
+                            true,
+                            true,
+                            [
+                                'CURRENT_USER' => 1,
+                                'IS_SYSTEM_ACTION' => true,
+                                'DISABLE_USER_FIELD_CHECK' => true,
+                            ],
+                        );
+                    }
+                } finally {
+                    ContactSync::suspendOutbound(false);
+                }
+                foreach ($contactIds as $contactId) {
+                    ContactSync::sendContactToSiteNow($contactId);
+                }
+            }
         }
 
         return [
@@ -424,8 +484,14 @@ class InboundEndpoint
             }
         }
 
+        $id = 0;
         $entity = new \CCrmCompany(false);
-        $id = (int)$entity->Add($fields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+        CompanySync::suspendOutbound(true);
+        try {
+            $id = (int)$entity->Add($fields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+        } finally {
+            CompanySync::suspendOutbound(false);
+        }
         if ($id <= 0) {
             return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
         }
@@ -451,6 +517,9 @@ class InboundEndpoint
         if ($id <= 0) {
             return ['success' => 0, 'error' => 'Company id is required'];
         }
+
+        // Inbound company update: suppress one-shot outbound UPDATE_COMPANY (same as handleUpdateCompany).
+        CompanySync::markInboundCompanyUpdate($id);
 
         $entity = new \CCrmCompany(false);
         $ok = (bool)$entity->Update($id, $fields, true, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
@@ -533,9 +602,6 @@ class InboundEndpoint
         if ($id <= 0) {
             return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
         }
-        if (\class_exists(ContactSync::class)) {
-            ContactSync::sendContactToSiteNow($id);
-        }
 
         return ['success' => 1, 'result' => $id];
     }
@@ -571,9 +637,6 @@ class InboundEndpoint
                 \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(false);
             }
         }
-        if ($ok && \class_exists(ContactSync::class)) {
-            ContactSync::sendContactToSiteNow($id);
-        }
 
         return $ok
             ? ['success' => 1, 'result' => true]
@@ -590,13 +653,22 @@ class InboundEndpoint
 
         $entity = new \CCrmContact(false);
         $updateFields = ['COMPANY_ID' => $companyId];
+        if (class_exists(ContactSync::class)) {
+            ContactSync::suspendOutbound(true);
+        }
         try {
-            $ok = (bool)$entity->Update($contactId, $updateFields, true, true, [
-                'CURRENT_USER' => 1,
-                'IS_SYSTEM_ACTION' => true,
-            ]);
-        } catch (\Throwable $e) {
-            $ok = (bool)$entity->Update($contactId, $updateFields);
+            try {
+                $ok = (bool)$entity->Update($contactId, $updateFields, true, true, [
+                    'CURRENT_USER' => 1,
+                    'IS_SYSTEM_ACTION' => true,
+                ]);
+            } catch (\Throwable $e) {
+                $ok = (bool)$entity->Update($contactId, $updateFields);
+            }
+        } finally {
+            if (class_exists(ContactSync::class)) {
+                ContactSync::suspendOutbound(false);
+            }
         }
 
         return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
@@ -747,8 +819,14 @@ class InboundEndpoint
         $childFields = $fields;
         $childFields[$ufHolding] = $headCompanyId;
 
+        $childId = 0;
         $entity = new \CCrmCompany(false);
-        $childId = (int)$entity->Add($childFields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+        CompanySync::suspendOutbound(true);
+        try {
+            $childId = (int)$entity->Add($childFields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+        } finally {
+            CompanySync::suspendOutbound(false);
+        }
         if ($childId <= 0) {
             return [
                 'success' => 0,
@@ -1144,5 +1222,113 @@ class InboundEndpoint
         }
 
         return false;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function loadCompanyContactIds(int $companyId): array
+    {
+        if ($companyId <= 0 || !\class_exists(\Bitrix\Crm\Binding\CompanyContactTable::class)) {
+            return [];
+        }
+        $bindings = \Bitrix\Crm\Binding\CompanyContactTable::getList([
+            'filter' => ['=COMPANY_ID' => $companyId],
+            'select' => ['CONTACT_ID'],
+        ])->fetchAll();
+        if (!\is_array($bindings)) {
+            return [];
+        }
+        $ids = [];
+        foreach ($bindings as $row) {
+            $cid = (int)($row['CONTACT_ID'] ?? 0);
+            if ($cid > 0) {
+                $ids[] = $cid;
+            }
+        }
+
+        return \array_values(\array_unique($ids));
+    }
+
+    /**
+     * Значения с карточки компании для зеркалирования на контакты (ответственный + UF «второй менеджер» компании).
+     *
+     * @return array{0: int, 1: mixed}
+     */
+    private static function readCompanyManagerMirrorValues(int $companyId, string $ufCompanySiteSync): array
+    {
+        $assigned = 0;
+        $ufVal = null;
+        $res = \CCrmCompany::GetListEx(
+            ['ID' => 'ASC'],
+            ['=ID' => $companyId, 'CHECK_PERMISSIONS' => 'N'],
+            false,
+            false,
+            ['ID', 'ASSIGNED_BY_ID', $ufCompanySiteSync]
+        );
+        $row = $res ? $res->Fetch() : null;
+        if (\is_array($row)) {
+            $assigned = (int)($row['ASSIGNED_BY_ID'] ?? 0);
+            if (\array_key_exists($ufCompanySiteSync, $row)) {
+                $ufVal = $row[$ufCompanySiteSync];
+            }
+        }
+        global $USER_FIELD_MANAGER;
+        if (($ufVal === null || $ufVal === '') && \is_object($USER_FIELD_MANAGER)) {
+            $ufs = $USER_FIELD_MANAGER->GetUserFields('CRM_COMPANY', $companyId);
+            if (isset($ufs[$ufCompanySiteSync])) {
+                $ufVal = $ufs[$ufCompanySiteSync]['VALUE'] ?? null;
+            }
+        }
+
+        return [$assigned, $ufVal];
+    }
+
+    /**
+     * После UPDATE_COMPANY: актуальные ответственный и UF компании для записи на контакты (с учётом только что применённых полей).
+     *
+     * @param array<string, mixed> $companyFieldsSubset
+     * @return array{0: int, 1: mixed} assigned_by_id, contact UF value (нормализовано под запись в CRM)
+     */
+    private static function resolveCompanyManagerMirrorForContacts(
+        int $companyId,
+        string $ufCompanySiteSync,
+        array $companyFieldsSubset
+    ): array {
+        [$assigned, $ufVal] = self::readCompanyManagerMirrorValues($companyId, $ufCompanySiteSync);
+        if (\array_key_exists('ASSIGNED_BY_ID', $companyFieldsSubset)) {
+            $assigned = (int)$companyFieldsSubset['ASSIGNED_BY_ID'];
+        }
+        if (\array_key_exists($ufCompanySiteSync, $companyFieldsSubset)) {
+            $ufVal = $companyFieldsSubset[$ufCompanySiteSync];
+        }
+
+        return [$assigned, self::normalizeCrmUfSingleValueForWrite($ufVal)];
+    }
+
+    /**
+     * Приведение значения UF к виду, который CCrmContact::Update обычно принимает (скаляр / пустая строка).
+     *
+     * @param mixed $v
+     * @return mixed
+     */
+    private static function normalizeCrmUfSingleValueForWrite($v)
+    {
+        if ($v === null || $v === false) {
+            return '';
+        }
+        if (\is_array($v)) {
+            if (\array_key_exists('VALUE', $v)) {
+                return self::normalizeCrmUfSingleValueForWrite($v['VALUE']);
+            }
+            if ($v !== [] && \array_keys($v) === \range(0, \count($v) - 1)) {
+                return self::normalizeCrmUfSingleValueForWrite($v[0] ?? '');
+            }
+            $first = \reset($v);
+
+            return self::normalizeCrmUfSingleValueForWrite($first !== false ? $first : '');
+        }
+
+        return $v;
     }
 }

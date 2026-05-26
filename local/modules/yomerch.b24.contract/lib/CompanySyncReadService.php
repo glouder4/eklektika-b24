@@ -36,7 +36,25 @@ class CompanySyncReadService
         $multiFields = \CCrmFieldMulti::GetEntityFields('COMPANY', $companyId, '');
         $company['MULTIFIELDS'] = [];
         foreach ($multiFields as $multiField) {
-            $company['MULTIFIELDS'][$multiField['TYPE_ID']] = $multiField;
+            if (!\is_array($multiField)) {
+                continue;
+            }
+            $typeId = (string) ($multiField['TYPE_ID'] ?? '');
+            if ($typeId === '') {
+                continue;
+            }
+            // PHONE/EMAIL/WEB — несколько строк; раньше каждая перезаписывала предыдущую (терялся WORK).
+            if (\in_array($typeId, ['PHONE', 'EMAIL', 'WEB'], true)) {
+                if (!isset($company['MULTIFIELDS'][$typeId]) || !\is_array($company['MULTIFIELDS'][$typeId])) {
+                    $company['MULTIFIELDS'][$typeId] = [];
+                }
+                if (isset($company['MULTIFIELDS'][$typeId]['VALUE'])) {
+                    $company['MULTIFIELDS'][$typeId] = [$company['MULTIFIELDS'][$typeId]];
+                }
+                $company['MULTIFIELDS'][$typeId][] = $multiField;
+                continue;
+            }
+            $company['MULTIFIELDS'][$typeId] = $multiField;
         }
 
         return $company;
