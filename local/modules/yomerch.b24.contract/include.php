@@ -9,4 +9,5 @@ Loader::registerAutoLoadClasses(null, [
     \OnlineService\Sync\Contract\CompanySyncNormalizeService::class => '/local/modules/yomerch.b24.contract/lib/CompanySyncNormalizeService.php',
     \OnlineService\Sync\Contract\CompanySyncPolicyService::class => '/local/modules/yomerch.b24.contract/lib/CompanySyncPolicyService.php',
     \OnlineService\Sync\Contract\CompanyPhoneUfMultifieldSync::class => '/local/modules/yomerch.b24.contract/lib/CompanyPhoneUfMultifieldSync.php',
+    \OnlineService\Sync\Contract\ContactInheritFromCompanyService::class => '/local/modules/yomerch.b24.contract/lib/ContactInheritFromCompanyService.php',
 ]);

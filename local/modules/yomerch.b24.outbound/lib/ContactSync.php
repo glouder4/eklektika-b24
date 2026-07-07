@@ -79,6 +79,9 @@ class ContactSync extends OutboundRequest
             'ID' => $siteRef,
             'OS_COMPANY_B24_ID' => $siteRef,
             'B24_ID' => $contactId,
+            // Fail-open + keep CRM UX snappy: OnBeforeCrmContactDelete must not block on flaky network.
+            '_OUTBOUND_TIMEOUT_SEC' => 8,
+            '_OUTBOUND_MAX_ATTEMPTS' => 1,
         ], false);
 
         if ((int)($response['success'] ?? 0) !== 1 || !empty($response['error'])) {
@@ -113,6 +116,109 @@ class ContactSync extends OutboundRequest
             return;
         }
         self::sendContactToSite($contactId);
+    }
+
+    /**
+     * UPDATE_CONTACT после наследования полей компании (registration + existing INN, ADR R29).
+     * Контрактный payload: менеджеры, UF site ref, маркетинг, ACTIVE.
+     *
+     * @return array<string, mixed> decoded response сайта
+     */
+    public static function sendRegistrationInheritedContactToSiteNow(int $contactId): array
+    {
+        if ($contactId <= 0) {
+            return ['success' => 0, 'reason_code' => 'invalid_contact_id'];
+        }
+        if (!\Bitrix\Main\Loader::includeModule('crm')) {
+            return ['success' => 0, 'reason_code' => 'crm_module_unavailable'];
+        }
+
+        $siteRef = self::resolveContactOutboundSiteRef($contactId);
+        if ($siteRef === '') {
+            self::writeOutboundTrace('ContactSync::registration_update_contact.skip_no_site_ref', [
+                'contact_id' => $contactId,
+            ]);
+
+            return ['success' => 0, 'reason_code' => 'no_site_ref'];
+        }
+
+        $contact = self::loadContactRowForOutbound($contactId);
+        if ($contact === null) {
+            return ['success' => 0, 'reason_code' => 'contact_not_found'];
+        }
+
+        $ufDeleteSiteRef = self::uf('contact.delete_site_ref');
+        $ufSecondManager = self::uf('contact.site_sync_value');
+        $siteUserId = self::resolveContactOutboundSiteUserId($contactId, $siteRef, $contact);
+        $assignedById = (int)($contact['ASSIGNED_BY_ID'] ?? 0);
+        $secondManagerRaw = self::extractSingleUfValue($contact, $ufSecondManager);
+
+        $post = [
+            'ACTION' => 'UPDATE_CONTACT',
+            'B24_ID' => $contactId,
+            'ID' => $siteRef,
+            $ufDeleteSiteRef => $siteUserId,
+            'ASSIGNED_BY_ID' => $assignedById,
+            'ASSIGNED_MANAGER' => $assignedById,
+            $ufSecondManager => $secondManagerRaw !== null ? $secondManagerRaw : '',
+            'SECOND_MANAGER' => $secondManagerRaw !== null ? $secondManagerRaw : '',
+            '_OUTBOUND_TIMEOUT_SEC' => 10,
+        ];
+
+        OutboundContactMarketingForSite::mergeAdvertisingMarketingFromCrmContact($post, $contact);
+
+        $sync = new self();
+        $response = $sync->sendRequest($post, false);
+
+        if ((int)($response['success'] ?? 0) === 1 && empty($response['error'])) {
+            self::writeOutboundTrace('ContactSync::registration_update_contact.ok', [
+                'contact_id' => $contactId,
+                'reason_code' => (string)($response['reason_code'] ?? ''),
+            ]);
+        } else {
+            self::writeOutboundTrace('ContactSync::registration_update_contact.failed', [
+                'contact_id' => $contactId,
+                'http_status' => (int)($response['http_status'] ?? 0),
+                'error_code' => (string)($response['error_code'] ?? ''),
+                'reason_code' => (string)($response['reason_code'] ?? ''),
+                'retryable' => !empty($response['retryable']),
+                'outcome' => (string)($response['outcome'] ?? ''),
+            ]);
+        }
+
+        return $response;
+    }
+
+    /**
+     * Лёгкий UPDATE_CONTACT: только ACTIVE (сценарий «Рекламный агент» без полного payload).
+     */
+    public static function sendContactMarketingActiveToSiteNow(int $contactId, string $activeYn): void
+    {
+        if ($contactId <= 0) {
+            return;
+        }
+        $siteRef = self::resolveContactOutboundSiteRef($contactId);
+        if ($siteRef === '') {
+            self::writeOutboundTrace('ContactSync::marketing_active.skip_no_site_ref', [
+                'contact_id' => $contactId,
+            ]);
+
+            return;
+        }
+        $activeYn = $activeYn === 'Y' ? 'Y' : 'N';
+        $companyB24Id = self::resolvePrimaryCompanyB24Id($contactId);
+        $post = [
+            'ACTION' => 'UPDATE_CONTACT',
+            'B24_ID' => $contactId,
+            'ID' => $siteRef,
+            'ACTIVE' => $activeYn,
+            '_OUTBOUND_TIMEOUT_SEC' => 10,
+        ];
+        if ($companyB24Id > 0) {
+            $post['OS_COMPANY_B24_ID'] = $companyB24Id;
+        }
+        $sync = new self();
+        $sync->sendRequest($post, false);
     }
 
     private static function uf(string $key): string
@@ -163,7 +269,7 @@ class ContactSync extends OutboundRequest
         $ufContactSiteUserId = self::uf('contact.site_user_id');
         $ufSecondManagerSource = self::uf('contact.site_sync_value');
         $ufCompanyDiscount = self::uf(self::UF_COMPANY_DISCOUNT);
-        $directorRaw = self::extractSingleUfValue($contact, $directorUf);
+        $directorOutbound = self::resolveDirectorOutbound($contactId, $contact);
         $secondManagerRaw = self::extractSingleUfValue($contact, $ufSecondManagerSource);
 
         $params = [
@@ -178,9 +284,11 @@ class ContactSync extends OutboundRequest
             // Сайт: `ASSIGNED_MANAGER` = `ASSIGNED_BY_ID` контакта; `SECOND_MANAGER` = UF `contact.site_sync_value`.
             'ASSIGNED_MANAGER' => (int)($contact['ASSIGNED_BY_ID'] ?? 0),
             'SECOND_MANAGER' => $secondManagerRaw !== null ? $secondManagerRaw : '',
-            $directorUf => $directorRaw,
-            'UF_IS_DIRECTOR' => self::ufToDirectorInt($directorRaw),
         ];
+        if ($directorOutbound !== null) {
+            $params[$directorUf] = $directorOutbound['raw'];
+            $params['UF_IS_DIRECTOR'] = $directorOutbound['int'];
+        }
         if ($email !== '') {
             $params['EMAIL'] = $email;
         }
@@ -211,6 +319,26 @@ class ContactSync extends OutboundRequest
             $advRaw = self::extractSingleUfValue($contact, $advUfKey);
             $params['UF_ADVERTISING_AGENT'] = $advRaw !== null && $advRaw !== '' ? $advRaw : '';
         }
+        if (($params['UF_ADVERTISING_AGENT'] ?? '') === '') {
+            if (
+                (isset($params['IS_MARKETING_AGENT']) && $params['IS_MARKETING_AGENT'] === 'Y')
+                || ($params['ACTIVE'] ?? 'N') === 'Y'
+            ) {
+                $params['UF_ADVERTISING_AGENT'] = 'Y';
+            }
+        }
+
+        if (self::isOsUserSyncDebugEnabled()) {
+            self::writePerfTrace('ContactSync::perf.UPDATE_CONTACT.marketing_agent', [
+                'contact_id' => $contactId,
+                'marketing_agent_raw' => self::extractSingleUfValue($contact, $advUfKey),
+                'inherits_raw' => $inheritsRaw,
+                'contact_uf_written' => $params[$advUfKey] ?? null,
+                'uf_advertising_agent_out' => $params['UF_ADVERTISING_AGENT'] ?? '',
+                'ACTIVE' => $params['ACTIVE'] ?? '',
+                'IS_MARKETING_AGENT' => $params['IS_MARKETING_AGENT'] ?? null,
+            ]);
+        }
 
         // По умолчанию отправляем пустое значение: это позволяет сайту корректно очищать скидку.
         $params[$ufCompanyDiscount] = '';
@@ -219,9 +347,8 @@ class ContactSync extends OutboundRequest
         $siteCatalogRef = self::resolveContactOutboundSiteRef($contactId);
         if ($siteCatalogRef !== '') {
             $params['ID'] = $siteCatalogRef;
-            // Сайт: `ID` и `OS_COMPANY_B24_ID` — одно и то же значение UF (`contact.delete_site_ref`).
-            $params['OS_COMPANY_B24_ID'] = $siteCatalogRef;
-        } elseif ($companyB24Id > 0) {
+        }
+        if ($companyB24Id > 0) {
             $params['OS_COMPANY_B24_ID'] = $companyB24Id;
         }
         if ($companyB24Id > 0) {
@@ -233,6 +360,7 @@ class ContactSync extends OutboundRequest
 
         $sync = new self();
         $response = $sync->sendRequest($params, false);
+
         if ((int)($response['success'] ?? 0) !== 1) {
             self::writeOutboundTrace('ContactSync::update_contact.failed', [
                 'contact_id' => $contactId,
@@ -386,13 +514,121 @@ class ContactSync extends OutboundRequest
         if ($contactId <= 0) {
             return false;
         }
-        global $USER_FIELD_MANAGER;
-        if (!is_object($USER_FIELD_MANAGER)) {
+        $contact = \CCrmContact::GetByID($contactId, false);
+        if (!\is_array($contact)) {
             return false;
         }
-        $ufRows = $USER_FIELD_MANAGER->GetUserFields('CRM_CONTACT', $contactId, LANGUAGE_ID);
-        $raw = $ufRows[self::uf(self::UF_CONTACT_IS_DIRECTOR)]['VALUE'] ?? null;
-        return self::ufToDirectorInt($raw) === 1;
+        $director = self::resolveDirectorOutbound($contactId, $contact);
+
+        return $director !== null && $director['int'] === 1;
+    }
+
+    /**
+     * UF «Руководитель» контакта → payload для сайта. null = не слать (CRM UF пуст/не прочитан).
+     *
+     * @param array<string, mixed> $contact
+     * @return array{raw: scalar, int: int}|null
+     */
+    private static function resolveDirectorOutbound(int $contactId, array $contact): ?array
+    {
+        $ufKey = self::uf(self::UF_CONTACT_IS_DIRECTOR);
+        $raw = self::readContactUfRaw($contactId, $ufKey, $contact);
+        if ($raw === null) {
+            return null;
+        }
+
+        return [
+            'raw' => $raw,
+            'int' => self::ufToDirectorInt($raw),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $contact
+     * @return scalar|null null — UF не прочитан (не слать на сайт); '' — явно пусто → 0
+     */
+    private static function readContactUfRaw(int $contactId, string $ufKey, array $contact)
+    {
+        global $USER_FIELD_MANAGER;
+        if ($contactId > 0 && \is_object($USER_FIELD_MANAGER)) {
+            $ufRows = $USER_FIELD_MANAGER->GetUserFields('CRM_CONTACT', $contactId, LANGUAGE_ID);
+            if (isset($ufRows[$ufKey]) && \is_array($ufRows[$ufKey])) {
+                $cell = $ufRows[$ufKey];
+                if (\array_key_exists('VALUE', $cell)) {
+                    $v = self::unwrapUfCellValue($cell['VALUE']);
+                    if ($v !== null) {
+                        return $v;
+                    }
+                }
+            }
+        }
+
+        if ($contactId > 0 && \class_exists(\Bitrix\Crm\ContactTable::class)) {
+            try {
+                $row = \Bitrix\Crm\ContactTable::getList([
+                    'filter' => ['=ID' => $contactId],
+                    'select' => ['ID', $ufKey],
+                    'limit' => 1,
+                ])->fetch();
+                if (\is_array($row)) {
+                    $fromTable = self::unwrapUfCellValue($row[$ufKey] ?? null);
+                    if ($fromTable !== null) {
+                        return $fromTable;
+                    }
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+
+        if (!\array_key_exists($ufKey, $contact)) {
+            return null;
+        }
+
+        $v = self::unwrapUfCellValue($contact[$ufKey]);
+        if ($v === null) {
+            return null;
+        }
+
+        return $v;
+    }
+
+    /**
+     * @param mixed $v
+     * @return scalar|null
+     */
+    private static function unwrapUfCellValue($v)
+    {
+        if ($v === null) {
+            return null;
+        }
+        if (\is_array($v)) {
+            if (\array_key_exists('VALUE', $v)) {
+                return self::unwrapUfCellValue($v['VALUE']);
+            }
+            if ($v === []) {
+                return '';
+            }
+            $first = \reset($v);
+            if (\is_scalar($first)) {
+                return $first;
+            }
+            if (\is_array($first) && \array_key_exists('VALUE', $first)) {
+                return self::unwrapUfCellValue($first['VALUE']);
+            }
+
+            return null;
+        }
+        if (\is_bool($v)) {
+            return $v ? 1 : 0;
+        }
+        if (\is_int($v) || \is_float($v)) {
+            return $v;
+        }
+        if (\is_string($v)) {
+            return $v;
+        }
+
+        return null;
     }
 
     private static function isHeadCompany(int $companyId): bool
@@ -453,7 +689,7 @@ class ContactSync extends OutboundRequest
 
     /**
      * Значение UF {@see UfMap} `contact.delete_site_ref` (`UF_CRM_3804624445748`):
-     * DELETE_CONTACT — поля `ID` / `OS_COMPANY_B24_ID`; UPDATE_CONTACT — то же + скидка компании.
+     * DELETE_CONTACT — поле `ID` (site user ref). UPDATE_CONTACT: `ID` = site user, `OS_COMPANY_B24_ID` = crm.company.id.
      *
      * @param array<int, mixed> $eventArgs аргументы CRM-события (например OnBeforeCrmContactDelete) — UF часто доступен здесь раньше, чем в «обрезанном» GetByID.
      */
@@ -730,7 +966,7 @@ class ContactSync extends OutboundRequest
 
     private static function ufToDirectorInt($v): int
     {
-        if ($v === null || $v === '' || $v === false) {
+        if ($v === null || $v === false) {
             return 0;
         }
         if ($v === true) {
@@ -741,11 +977,17 @@ class ContactSync extends OutboundRequest
         }
         if (\is_string($v)) {
             $s = \strtolower(\trim($v));
+            if ($s === '') {
+                return 0;
+            }
             if ($s === 'y' || $s === '1' || $s === 'yes' || $s === 'true') {
                 return 1;
             }
-            if ($s === '0' || $s === 'n' || $s === 'no' || $s === '') {
+            if ($s === '0' || $s === 'n' || $s === 'no') {
                 return 0;
+            }
+            if (\is_numeric($s)) {
+                return ((int) $s) !== 0 ? 1 : 0;
             }
         }
 
@@ -785,5 +1027,89 @@ class ContactSync extends OutboundRequest
         }
 
         return '';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function loadContactRowForOutbound(int $contactId): ?array
+    {
+        $contact = \CCrmContact::GetByID($contactId, false);
+        if (!\is_array($contact) || $contact === []) {
+            return null;
+        }
+
+        global $USER_FIELD_MANAGER;
+        if (\is_object($USER_FIELD_MANAGER)) {
+            $ufRows = $USER_FIELD_MANAGER->GetUserFields('CRM_CONTACT', $contactId, LANGUAGE_ID);
+            foreach ($ufRows as $fieldName => $fieldMeta) {
+                if (!\is_string($fieldName) || \strncmp($fieldName, 'UF_', 3) !== 0) {
+                    continue;
+                }
+                $v = $fieldMeta['VALUE'] ?? null;
+                if (!\array_key_exists($fieldName, $contact) || $contact[$fieldName] === null || $contact[$fieldName] === '') {
+                    $contact[$fieldName] = $v;
+                }
+            }
+        }
+
+        return $contact;
+    }
+
+    /**
+     * b_user.ID для outbound: сначала {@see contact.delete_site_ref}, иначе {@see contact.site_user_id}.
+     *
+     * @param array<string, mixed> $contact
+     */
+    private static function resolveContactOutboundSiteUserId(int $contactId, string $siteRef, array $contact): int
+    {
+        if ($siteRef !== '') {
+            $n = (int)$siteRef;
+            if ($n > 0) {
+                return $n;
+            }
+        }
+
+        $ufDeleteSiteRef = self::uf('contact.delete_site_ref');
+        $raw = self::extractSingleUfValue($contact, $ufDeleteSiteRef);
+        if ($raw !== null && $raw !== '') {
+            $n = (int)$raw;
+            if ($n > 0) {
+                return $n;
+            }
+        }
+
+        $ufSiteUserId = self::uf('contact.site_user_id');
+        $rawSiteUser = self::extractSingleUfValue($contact, $ufSiteUserId);
+        if ($rawSiteUser !== null && $rawSiteUser !== '') {
+            $n = (int)$rawSiteUser;
+            if ($n > 0) {
+                return $n;
+            }
+        }
+
+        if ($contactId > 0 && \class_exists(\Bitrix\Crm\ContactTable::class)) {
+            try {
+                $row = \Bitrix\Crm\ContactTable::getList([
+                    'filter' => ['=ID' => $contactId],
+                    'select' => ['ID', $ufDeleteSiteRef, $ufSiteUserId],
+                    'limit' => 1,
+                ])->fetch();
+                if (\is_array($row)) {
+                    foreach ([$ufDeleteSiteRef, $ufSiteUserId] as $key) {
+                        $v = self::extractSingleUfValue($row, $key);
+                        if ($v !== null && $v !== '') {
+                            $n = (int)$v;
+                            if ($n > 0) {
+                                return $n;
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+
+        return 0;
     }
 }

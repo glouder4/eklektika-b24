@@ -3,6 +3,7 @@
 namespace OnlineService\Sync\FromSite;
 
 use OnlineService\Sync\UfMap;
+use OnlineService\Sync\Contract\ContactInheritFromCompanyService;
 use OnlineService\Sync\ToSite\CompanySync;
 use OnlineService\Sync\ToSite\ContactSync;
 
@@ -12,7 +13,7 @@ use OnlineService\Sync\ToSite\ContactSync;
  */
 class InboundEndpoint
 {
-    private static function uf(string $key): string
+    private static function uf(string $key): string 
     {
         return UfMap::get($key);
     }
@@ -25,6 +26,7 @@ class InboundEndpoint
                 'success' => 0,
                 'error' => (string)($request['_INVALID_PAYLOAD_REASON'] ?? 'Invalid payload'),
                 'error_code' => 'invalid_payload',
+                'reason_code' => 'invalid_payload',
                 'http_status' => 400,
             ];
         }
@@ -73,44 +75,89 @@ class InboundEndpoint
         }
 
         $email = trim((string)($request['EMAIL'] ?? ''));
-        $phone = trim((string)($request['PHONE'] ?? ''));
-        $contactId = 0;
-
-        if ($email !== '') {
-            $emailIds = self::findContactIdsByEmail($email);
-            if (count($emailIds) === 1) {
-                $contactId = (int)$emailIds[0];
-            } elseif (count($emailIds) > 1 && $phone !== '') {
-                $phoneDigits = self::normalizePhoneDigits($phone);
-                foreach ($emailIds as $candidateId) {
-                    if (self::contactHasPhoneDigits((int)$candidateId, $phoneDigits)) {
-                        $contactId = (int)$candidateId;
-                        break;
-                    }
-                }
-            }
-        }
-        if ($contactId <= 0 && $phone !== '') {
-            $phoneIds = self::findContactIdsByPhone($phone);
-            if (count($phoneIds) === 1) {
-                $contactId = (int)$phoneIds[0];
-            }
-        }
-
-        if ($contactId <= 0) {
+        if ($email === '') {
             return [
                 'success' => 0,
-                'error' => 'Contact not found',
+                'error' => 'EMAIL is required',
+                'reason_code' => 'invalid_payload',
+                'http_status' => 400,
                 'data' => [],
             ];
         }
 
+        // Registration uniqueness key: email only. PHONE in request is ignored for lookup.
+        $emailIds = self::findContactIdsByEmail($email);
+        if (\count($emailIds) !== 1) {
+            return [
+                'success' => 0,
+                'error' => 'Contact not found',
+                'reason_code' => \count($emailIds) > 1 ? 'contact_lookup_ambiguous' : 'contact_not_found',
+                'data' => [],
+            ];
+        }
+
+        $contactId = (int)$emailIds[0];
+
         return [
             'success' => 1,
-            'data' => [
-                'ID' => $contactId,
-            ],
+            'data' => self::buildGetContactIdResponseData($contactId),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function buildGetContactIdResponseData(int $contactId): array
+    {
+        $data = ['ID' => $contactId];
+        if ($contactId <= 0) {
+            return $data;
+        }
+
+        $ufSiteRef = self::uf('contact.delete_site_ref');
+        $contact = \CCrmContact::GetByID($contactId, false);
+        if (\is_array($contact)) {
+            $siteRef = $contact[$ufSiteRef] ?? null;
+            if ($siteRef !== null && $siteRef !== '' && $siteRef !== false) {
+                $data[$ufSiteRef] = $siteRef;
+            }
+        }
+
+        $email = self::getFirstContactMultifieldValue($contactId, 'EMAIL');
+        if ($email !== '') {
+            $data['EMAIL'] = $email;
+        }
+        $phone = self::getFirstContactMultifieldValue($contactId, 'PHONE');
+        if ($phone !== '') {
+            $data['PHONE'] = $phone;
+        }
+
+        return $data;
+    }
+
+    private static function getFirstContactMultifieldValue(int $contactId, string $typeId): string
+    {
+        if ($contactId <= 0 || $typeId === '') {
+            return '';
+        }
+
+        $res = \CCrmFieldMulti::GetListEx(
+            ['ID' => 'ASC'],
+            [
+                'ENTITY_ID' => 'CONTACT',
+                'ELEMENT_ID' => $contactId,
+                'TYPE_ID' => $typeId,
+            ],
+            false,
+            ['nTopCount' => 1],
+            ['VALUE']
+        );
+        if (!\is_object($res)) {
+            return '';
+        }
+        $row = $res->Fetch();
+
+        return \is_array($row) ? trim((string)($row['VALUE'] ?? '')) : '';
     }
 
     private static function handleUpdateGroup(array $request): array
@@ -329,6 +376,7 @@ class InboundEndpoint
             return [
                 'success' => 0,
                 'error' => 'CRM module is not available',
+                'reason_code' => 'crm_module_unavailable',
             ];
         }
 
@@ -339,6 +387,7 @@ class InboundEndpoint
                 'success' => 0,
                 'error' => 'Invalid payload: METHOD is required',
                 'error_code' => 'invalid_payload',
+                'reason_code' => 'invalid_payload',
                 'http_status' => 400,
             ];
         }
@@ -465,6 +514,12 @@ class InboundEndpoint
     private static function crmCompanyAdd(array $params): array
     {
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
+        // `CCrmCompany::Add` is a low-level CRM API; for REST-like inbound payloads normalize multifields to `FM`.
+        $fields = self::normalizeCrmMultiFieldsRestToFm($fields);
+        $siteElementValidation = self::validateCompanyAddSiteElementIdInFields($fields);
+        if ($siteElementValidation !== null) {
+            return $siteElementValidation;
+        }
         $innDigits = self::normalizeInnDigits(self::extractInnFromCompanyAddFields($fields));
         if ($innDigits !== '') {
             $existingCompanyIds = self::findCompanyIdsByRequisiteInn($innDigits);
@@ -493,7 +548,11 @@ class InboundEndpoint
             CompanySync::suspendOutbound(false);
         }
         if ($id <= 0) {
-            return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+            return [
+                'success' => 0,
+                'error' => (string)$entity->LAST_ERROR,
+                'reason_code' => 'company_add_failed',
+            ];
         }
 
         return ['success' => 1, 'result' => $id];
@@ -504,7 +563,11 @@ class InboundEndpoint
         $id = (int)($params['id'] ?? 0);
         $row = $id > 0 ? \CCrmCompany::GetByID($id, false) : false;
         if (!$row) {
-            return ['success' => 0, 'error' => 'Company not found'];
+            return [
+                'success' => 0,
+                'error' => 'Company not found',
+                'reason_code' => 'company_get_not_found',
+            ];
         }
 
         return ['success' => 1, 'result' => $row];
@@ -515,7 +578,11 @@ class InboundEndpoint
         $id = (int)($params['id'] ?? 0);
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
         if ($id <= 0) {
-            return ['success' => 0, 'error' => 'Company id is required'];
+            return [
+                'success' => 0,
+                'error' => 'Company id is required',
+                'reason_code' => 'company_update_id_required',
+            ];
         }
 
         // Inbound company update: suppress one-shot outbound UPDATE_COMPANY (same as handleUpdateCompany).
@@ -524,7 +591,13 @@ class InboundEndpoint
         $entity = new \CCrmCompany(false);
         $ok = (bool)$entity->Update($id, $fields, true, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
 
-        return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+        return $ok
+            ? ['success' => 1, 'result' => true]
+            : [
+                'success' => 0,
+                'error' => (string)$entity->LAST_ERROR,
+                'reason_code' => 'company_update_failed',
+            ];
     }
 
     private static function crmRequisiteAdd(array $params): array
@@ -534,7 +607,11 @@ class InboundEndpoint
             $entity = new \CCrmRequisite();
             $id = (int)$entity->Add($fields);
             if ($id <= 0) {
-                return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+                return [
+                    'success' => 0,
+                    'error' => (string)$entity->LAST_ERROR,
+                    'reason_code' => 'requisite_add_failed',
+                ];
             }
             return ['success' => 1, 'result' => $id];
         }
@@ -545,7 +622,11 @@ class InboundEndpoint
                 ? (int)$rawAddResult->getId()
                 : (int)$rawAddResult;
             if ($id <= 0) {
-                return ['success' => 0, 'error' => 'EntityRequisite add failed'];
+                return [
+                    'success' => 0,
+                    'error' => 'EntityRequisite add failed',
+                    'reason_code' => 'requisite_add_entity_failed',
+                ];
             }
             return ['success' => 1, 'result' => $id];
         }
@@ -555,9 +636,17 @@ class InboundEndpoint
             if ($id > 0) {
                 return ['success' => 1, 'result' => $id];
             }
-            return ['success' => 0, 'error' => 'RequisiteTable add failed'];
+            return [
+                'success' => 0,
+                'error' => 'RequisiteTable add failed',
+                'reason_code' => 'requisite_table_add_failed',
+            ];
         }
-        return ['success' => 0, 'error' => 'CCrmRequisite/EntityRequisite/RequisiteTable class not found'];
+        return [
+            'success' => 0,
+            'error' => 'CCrmRequisite/EntityRequisite/RequisiteTable class not found',
+            'reason_code' => 'requisite_class_not_found',
+        ];
     }
 
     private static function crmRequisiteUpdate(array $params): array
@@ -565,82 +654,330 @@ class InboundEndpoint
         $id = (int)($params['id'] ?? 0);
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
         if ($id <= 0) {
-            return ['success' => 0, 'error' => 'Requisite id is required'];
+            return [
+                'success' => 0,
+                'error' => 'Requisite id is required',
+                'reason_code' => 'requisite_update_id_required',
+            ];
         }
         if (class_exists('\CCrmRequisite')) {
             $entity = new \CCrmRequisite();
             $ok = (bool)$entity->Update($id, $fields);
-            return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+            return $ok
+                ? ['success' => 1, 'result' => true]
+                : [
+                    'success' => 0,
+                    'error' => (string)$entity->LAST_ERROR,
+                    'reason_code' => 'requisite_update_failed',
+                ];
         }
         if (class_exists('\Bitrix\Crm\EntityRequisite')) {
             $entity = new \Bitrix\Crm\EntityRequisite();
             $ok = (bool)$entity->update($id, $fields);
-            return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => 'EntityRequisite update failed'];
+            return $ok
+                ? ['success' => 1, 'result' => true]
+                : [
+                    'success' => 0,
+                    'error' => 'EntityRequisite update failed',
+                    'reason_code' => 'requisite_update_entity_failed',
+                ];
         }
         if (class_exists('\Bitrix\Crm\RequisiteTable')) {
             $updateResult = \Bitrix\Crm\RequisiteTable::update($id, $fields);
             $ok = method_exists($updateResult, 'isSuccess') ? (bool)$updateResult->isSuccess() : false;
-            return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => 'RequisiteTable update failed'];
+            return $ok
+                ? ['success' => 1, 'result' => true]
+                : [
+                    'success' => 0,
+                    'error' => 'RequisiteTable update failed',
+                    'reason_code' => 'requisite_table_update_failed',
+                ];
         }
-        return ['success' => 0, 'error' => 'CCrmRequisite/EntityRequisite/RequisiteTable class not found'];
+        return [
+            'success' => 0,
+            'error' => 'CCrmRequisite/EntityRequisite/RequisiteTable class not found',
+            'reason_code' => 'requisite_class_not_found',
+        ];
     }
 
     private static function crmContactAdd(array $params): array
     {
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
+        $fields = self::normalizeCrmMultiFieldsRestToFm($fields);
         $entity = new \CCrmContact(false);
         if (class_exists(\OnlineService\Sync\ToSite\ContactSync::class)) {
             \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(true);
         }
         try {
-            $id = (int)$entity->Add($fields, true, ['CURRENT_USER' => 1, 'IS_SYSTEM_ACTION' => true]);
+            $id = (int)$entity->Add($fields, true, [
+                'CURRENT_USER' => 1,
+                'IS_SYSTEM_ACTION' => true,
+                // Registration: email is the only uniqueness key; allow same phone on different contacts.
+                'DISABLE_DUPLICATE_CONTROL' => true,
+            ]);
         } finally {
             if (class_exists(\OnlineService\Sync\ToSite\ContactSync::class)) {
                 \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(false);
             }
         }
         if ($id <= 0) {
-            return ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+            return [
+                'success' => 0,
+                'error' => (string)$entity->LAST_ERROR,
+                'reason_code' => 'contact_add_failed',
+            ];
         }
 
         return ['success' => 1, 'result' => $id];
+    }
+
+    /**
+     * crm.contact.add via low-level CRM entity expects multifields in `FM`.
+     * Inbound contract (REST-like) may provide `PHONE/EMAIL/WEB/IM` as sequential arrays of {VALUE, VALUE_TYPE}.
+     *
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    private static function normalizeCrmMultiFieldsRestToFm(array $fields): array
+    {
+        if (isset($fields['FM']) && \is_array($fields['FM']) && $fields['FM'] !== []) {
+            // Caller already provides FM explicitly — do not mutate.
+            return $fields;
+        }
+
+        $codes = ['PHONE', 'EMAIL', 'WEB', 'IM'];
+        $fm = [];
+
+        foreach ($codes as $code) {
+            if (!isset($fields[$code]) || !\is_array($fields[$code]) || $fields[$code] === []) {
+                continue;
+            }
+
+            $raw = $fields[$code];
+
+            $isSeq = false;
+            if (\function_exists('array_is_list')) {
+                $isSeq = \array_is_list($raw);
+            } else {
+                $k = \array_keys($raw);
+                $isSeq = $k !== [] && $k === \range(0, \count($raw) - 1);
+            }
+
+            $rows = [];
+            if ($isSeq) {
+                $rows = $raw;
+            } else {
+                // Accept shape like PHONE[n0] = {VALUE, VALUE_TYPE}.
+                foreach ($raw as $maybeRow) {
+                    $rows[] = $maybeRow;
+                }
+            }
+
+            $out = [];
+            $j = 0;
+            foreach ($rows as $row) {
+                if (!\is_array($row)) {
+                    continue;
+                }
+                $val = (string)($row['VALUE'] ?? $row['value'] ?? '');
+                $type = (string)($row['VALUE_TYPE'] ?? $row['value_type'] ?? 'WORK');
+                if ($val === '' && $type === '') {
+                    continue;
+                }
+                $out['n' . $j] = ['VALUE' => $val, 'VALUE_TYPE' => $type !== '' ? $type : 'WORK'];
+                $j++;
+            }
+
+            if ($out !== []) {
+                $fm[$code] = $out;
+                // Compatibility: some low-level CRM paths accept multifields as $fields[PHONE][n0]...
+                // Keep data in both shapes to avoid silent drops.
+                $fields[$code] = $out;
+            }
+        }
+
+        if ($fm === []) {
+            return $fields;
+        }
+
+        $fields['FM'] = $fm;
+
+        return $fields;
     }
 
     private static function crmContactUpdate(array $params): array
     {
         $id = (int)($params['id'] ?? 0);
         $fields = is_array($params['fields'] ?? null) ? $params['fields'] : [];
+        $shouldInherit = self::isTruthyInboundFlag($params['inherit_from_company'] ?? null);
         if ($id <= 0) {
-            return ['success' => 0, 'error' => 'Contact id is required'];
+            return [
+                'success' => 0,
+                'error' => 'Contact id is required',
+                'reason_code' => 'contact_update_id_required',
+            ];
         }
-        if ($fields === []) {
-            return ['success' => 0, 'error' => 'fields is required'];
+        if ($fields === [] && !$shouldInherit) {
+            return [
+                'success' => 0,
+                'error' => 'fields is required',
+                'reason_code' => 'contact_update_fields_required',
+            ];
         }
-        $fields = self::normalizeCrmContactFieldsForUpdate($fields);
-        if (class_exists(\OnlineService\Sync\ToSite\ContactSync::class)) {
-            \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(true);
-        }
-        $entity = new \CCrmContact(false);
-        try {
-            $ok = (bool) $entity->Update(
-                $id,
-                $fields,
-                true,
-                true,
-                [
-                    'CURRENT_USER' => 1,
-                    'IS_SYSTEM_ACTION' => true,
-                ],
-            );
-        } finally {
-            if (class_exists(\OnlineService\Sync\ToSite\ContactSync::class)) {
-                \OnlineService\Sync\ToSite\ContactSync::suspendOutbound(false);
+
+        if ($fields !== []) {
+            $fields = self::normalizeCrmContactFieldsForUpdate($fields);
+            if (class_exists(ContactSync::class)) {
+                ContactSync::suspendOutbound(true);
+            }
+            $entity = new \CCrmContact(false);
+            try {
+                $ok = (bool) $entity->Update(
+                    $id,
+                    $fields,
+                    true,
+                    true,
+                    [
+                        'CURRENT_USER' => 1,
+                        'IS_SYSTEM_ACTION' => true,
+                    ],
+                );
+            } finally {
+                if (class_exists(ContactSync::class)) {
+                    ContactSync::suspendOutbound(false);
+                }
+            }
+
+            if (!$ok) {
+                return [
+                    'success' => 0,
+                    'error' => (string) $entity->LAST_ERROR,
+                    'reason_code' => 'contact_update_failed',
+                ];
             }
         }
 
-        return $ok
-            ? ['success' => 1, 'result' => true]
-            : ['success' => 0, 'error' => (string) $entity->LAST_ERROR];
+        if (!$shouldInherit) {
+            return ['success' => 1, 'result' => true];
+        }
+
+        $companyId = self::resolveContactInheritCompanyId($id, $params, $fields);
+        if ($companyId <= 0) {
+            return [
+                'success' => 0,
+                'error' => 'company_id is required for inherit_from_company',
+                'reason_code' => 'contact_inherit_company_id_required',
+            ];
+        }
+
+        $inheritDiag = [
+            'company_id' => $companyId,
+            'contact_id' => $id,
+            'service_available' => \class_exists(ContactInheritFromCompanyService::class),
+            'built_field_keys' => [],
+            'copied_fields' => [],
+            'skipped_fields' => [],
+            'update_ok' => false,
+            'last_error' => '',
+        ];
+
+        if (!$inheritDiag['service_available']) {
+            return [
+                'success' => 1,
+                'result' => true,
+                'reason_code' => 'contact_inherit_service_unavailable',
+                'data' => [
+                    'inherit' => $inheritDiag,
+                    'contact_inherited' => false,
+                    'update_contact_outbound' => [
+                        'success' => false,
+                        'reason_code' => 'contact_inherit_skipped_outbound',
+                    ],
+                ],
+            ];
+        }
+
+        $inheritEvidence = null;
+        if (class_exists(ContactSync::class)) {
+            ContactSync::suspendOutbound(true);
+        }
+        try {
+            $inheritService = new ContactInheritFromCompanyService();
+            $inheritFields = $inheritService->buildInheritFieldsFromCompany($companyId);
+            $inheritDiag['built_field_keys'] = \array_keys($inheritFields);
+
+            if ($inheritFields === []) {
+                if (class_exists(ContactSync::class)) {
+                    ContactSync::suspendOutbound(false);
+                }
+
+                return [
+                    'success' => 1,
+                    'result' => true,
+                    'reason_code' => 'contact_inherit_company_snapshot_empty',
+                    'data' => [
+                        'inherit' => $inheritDiag,
+                        'contact_inherited' => false,
+                        'update_contact_outbound' => [
+                            'success' => false,
+                            'reason_code' => 'contact_inherit_skipped_outbound',
+                        ],
+                    ],
+                ];
+            }
+
+            // Registration inherit: перезаписываем CRM-дефолты (ASSIGNED_BY_ID=1 и т.п.), не only-if-empty.
+            $inheritResult = $inheritService->applyToContact($id, $inheritFields, false);
+            $inheritDiag['copied_fields'] = $inheritResult['copied_fields'] ?? [];
+            $inheritDiag['skipped_fields'] = $inheritResult['skipped_fields'] ?? [];
+            $inheritDiag['update_ok'] = (bool)($inheritResult['update_ok'] ?? false);
+            $inheritDiag['last_error'] = (string)($inheritResult['last_error'] ?? '');
+
+            if ($inheritDiag['copied_fields'] !== [] && $inheritDiag['update_ok']) {
+                $inheritEvidence = [
+                    'company_id' => $companyId,
+                    'contact_id' => $id,
+                    'copied_fields' => $inheritDiag['copied_fields'],
+                ];
+            }
+        } finally {
+            if (class_exists(ContactSync::class)) {
+                ContactSync::suspendOutbound(false);
+            }
+        }
+
+        if ($inheritEvidence !== null) {
+            return [
+                'success' => 1,
+                'result' => true,
+                'reason_code' => 'contact_inherited_from_company',
+                'data' => [
+                    'evidence' => $inheritEvidence,
+                    'inherit' => $inheritDiag,
+                    'contact_inherited' => true,
+                    'update_contact_outbound' => self::runInheritedContactOutbound($id),
+                ],
+            ];
+        }
+
+        $reasonCode = 'contact_inherit_no_fields_copied';
+        if ($inheritDiag['last_error'] !== '' && $inheritDiag['last_error'] !== 'all_fields_skipped_only_if_empty') {
+            $reasonCode = 'contact_inherit_update_failed';
+        }
+
+        return [
+            'success' => 1,
+            'result' => true,
+            'reason_code' => $reasonCode,
+            'data' => [
+                'inherit' => $inheritDiag,
+                'contact_inherited' => false,
+                'update_contact_outbound' => [
+                    'success' => false,
+                    'reason_code' => 'contact_inherit_skipped_outbound',
+                ],
+            ],
+        ];
     }
 
     private static function crmContactCompanyAdd(array $params): array
@@ -648,7 +985,11 @@ class InboundEndpoint
         $contactId = (int)($params['id'] ?? 0);
         $companyId = (int)($params['fields']['COMPANY_ID'] ?? 0);
         if ($contactId <= 0 || $companyId <= 0) {
-            return ['success' => 0, 'error' => 'Contact id and fields.COMPANY_ID are required'];
+            return [
+                'success' => 0,
+                'error' => 'Contact id and fields.COMPANY_ID are required',
+                'reason_code' => 'contact_company_add_params_required',
+            ];
         }
 
         $entity = new \CCrmContact(false);
@@ -665,13 +1006,167 @@ class InboundEndpoint
             } catch (\Throwable $e) {
                 $ok = (bool)$entity->Update($contactId, $updateFields);
             }
+
+            if (!$ok) {
+                return [
+                    'success' => 0,
+                    'error' => (string)$entity->LAST_ERROR,
+                    'reason_code' => 'contact_company_add_failed',
+                ];
+            }
         } finally {
             if (class_exists(ContactSync::class)) {
                 ContactSync::suspendOutbound(false);
             }
         }
 
-        return $ok ? ['success' => 1, 'result' => true] : ['success' => 0, 'error' => (string)$entity->LAST_ERROR];
+        return ['success' => 1, 'result' => true];
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @param array<string, mixed> $fields
+     */
+    private static function resolveContactInheritCompanyId(int $contactId, array $params, array $fields): int
+    {
+        $fromFields = (int)($fields['COMPANY_ID'] ?? 0);
+        if ($fromFields > 0) {
+            return $fromFields;
+        }
+        $fromParam = (int)($params['company_id'] ?? 0);
+        if ($fromParam > 0) {
+            return $fromParam;
+        }
+
+        return self::resolveContactPrimaryCompanyId($contactId);
+    }
+
+    private static function resolveContactPrimaryCompanyId(int $contactId): int
+    {
+        if ($contactId <= 0) {
+            return 0;
+        }
+        if (\class_exists(\Bitrix\Crm\Binding\CompanyContactTable::class)) {
+            $rows = \Bitrix\Crm\Binding\CompanyContactTable::getList([
+                'filter' => ['=CONTACT_ID' => $contactId],
+                'select' => ['COMPANY_ID', 'IS_PRIMARY'],
+                'order' => ['IS_PRIMARY' => 'DESC', 'COMPANY_ID' => 'ASC'],
+            ])->fetchAll();
+            $fallback = 0;
+            foreach ($rows as $row) {
+                $companyId = (int)($row['COMPANY_ID'] ?? 0);
+                if ($companyId <= 0) {
+                    continue;
+                }
+                if ($fallback <= 0) {
+                    $fallback = $companyId;
+                }
+                if (self::isTruthyInboundFlag($row['IS_PRIMARY'] ?? null)) {
+                    return $companyId;
+                }
+            }
+            if ($fallback > 0) {
+                return $fallback;
+            }
+        }
+
+        $contact = \CCrmContact::GetByID($contactId, false);
+        if (\is_array($contact)) {
+            return (int)($contact['COMPANY_ID'] ?? 0);
+        }
+
+        return 0;
+    }
+
+    /**
+     * @return array{success: bool, reason_code: string}
+     */
+    private static function runInheritedContactOutbound(int $contactId): array
+    {
+        if (!class_exists(ContactSync::class)) {
+            return ['success' => false, 'reason_code' => 'contact_sync_unavailable'];
+        }
+        if (\method_exists(ContactSync::class, 'sendRegistrationInheritedContactToSiteNow')) {
+            $result = ContactSync::sendRegistrationInheritedContactToSiteNow($contactId);
+            if (!\is_array($result)) {
+                return ['success' => false, 'reason_code' => 'outbound_invalid_response'];
+            }
+
+            return [
+                'success' => (bool)($result['success'] ?? false),
+                'reason_code' => (string)($result['reason_code'] ?? ''),
+            ];
+        }
+
+        ContactSync::sendContactToSiteNow($contactId);
+
+        return ['success' => true, 'reason_code' => ''];
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function isTruthyInboundFlag($value): bool
+    {
+        if ($value === true || $value === 1 || $value === '1' || $value === 'Y' || $value === 'y') {
+            return true;
+        }
+        if (\is_string($value)) {
+            $normalized = \strtolower(\trim($value));
+
+            return \in_array($normalized, ['true', 'yes', 'on'], true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Если в `crm.company.add` передан UF site_element_id (канонический, legacy или транспортный ключ) —
+     * значение должно быть положительным целым. Отсутствие UF допустимо (вариант B: update позже).
+     *
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>|null
+     */
+    private static function validateCompanyAddSiteElementIdInFields(array $fields): ?array
+    {
+        $keysToCheck = [
+            self::uf('company.site_element_id'),
+            self::uf('company.site_element_id_legacy_alias'),
+            'SITE_ELEMENT_ID',
+            'site_element_id',
+        ];
+        foreach ($keysToCheck as $key) {
+            if (!\array_key_exists($key, $fields)) {
+                continue;
+            }
+            if (!self::isPositiveIntScalar($fields[$key])) {
+                return [
+                    'success' => 0,
+                    'error' => $key . ' must be a positive integer when provided in crm.company.add fields',
+                    'reason_code' => 'company_add_invalid_site_element_id',
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param mixed $v
+     */
+    private static function isPositiveIntScalar($v): bool
+    {
+        if ($v === null || $v === false || $v === '' || $v === '0' || $v === 0) {
+            return false;
+        }
+        if (\is_int($v)) {
+            return $v > 0;
+        }
+        if (\is_string($v) && \ctype_digit($v)) {
+            return (int) $v > 0;
+        }
+
+        return false;
     }
 
     /**
@@ -1123,105 +1618,6 @@ class InboundEndpoint
         }
 
         return array_values(array_unique($ids));
-    }
-
-    private static function findContactIdsByPhone(string $phone): array
-    {
-        $ids = [];
-        $variants = self::phoneVariants($phone);
-        foreach ($variants as $candidate) {
-            if ($candidate === '') {
-                continue;
-            }
-            $res = \CCrmContact::GetListEx(
-                ['ID' => 'ASC'],
-                ['=PHONE' => $candidate, 'CHECK_PERMISSIONS' => 'N'],
-                false,
-                false,
-                ['ID', 'PHONE']
-            );
-            while ($row = $res->Fetch()) {
-                $id = (int)($row['ID'] ?? 0);
-                if ($id > 0) {
-                    $ids[] = $id;
-                }
-            }
-        }
-
-        return array_values(array_unique($ids));
-    }
-
-    /**
-     * Разные форматы номера для поиска по PHONE в CRM.
-     */
-    private static function phoneVariants(string $phone): array
-    {
-        $digits = preg_replace('/\D+/', '', $phone);
-        if ($digits === '') {
-            return [];
-        }
-
-        $variants = [$phone, $digits];
-        if (strlen($digits) === 11 && $digits[0] === '8') {
-            $variants[] = '7' . substr($digits, 1);
-        }
-        if (strlen($digits) === 10) {
-            $variants[] = '7' . $digits;
-        }
-
-        $normalized = [];
-        foreach ($variants as $v) {
-            $v = trim((string)$v);
-            if ($v === '') {
-                continue;
-            }
-            $normalized[] = $v;
-            $normalized[] = '+' . ltrim($v, '+');
-        }
-
-        return array_values(array_unique($normalized));
-    }
-
-    private static function normalizePhoneDigits(string $phone): string
-    {
-        $digits = preg_replace('/\D+/', '', $phone);
-        if ($digits === '') {
-            return '';
-        }
-        if (strlen($digits) === 11 && $digits[0] === '8') {
-            $digits = '7' . substr($digits, 1);
-        }
-        if (strlen($digits) >= 10) {
-            return substr($digits, -10);
-        }
-        return $digits;
-    }
-
-    private static function contactHasPhoneDigits(int $contactId, string $phoneDigits): bool
-    {
-        if ($contactId <= 0 || $phoneDigits === '') {
-            return false;
-        }
-
-        $mf = \CCrmFieldMulti::GetListEx(
-            [],
-            [
-                'ENTITY_ID' => 'CONTACT',
-                'ELEMENT_ID' => $contactId,
-                'TYPE_ID' => 'PHONE',
-            ],
-            false,
-            false,
-            ['VALUE']
-        );
-        while ($row = $mf->Fetch()) {
-            $valueDigits = self::normalizePhoneDigits((string)($row['VALUE'] ?? ''));
-            if ($valueDigits !== '' && $valueDigits === $phoneDigits) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

@@ -758,6 +758,7 @@ if ($diagCompanyId > 0 && $diagHasRequisitesUf && class_exists('CCrmCompany')) {
 
 $requestPayload['_SYNC_TRACE_ID'] = $traceId;
 $requestPayload['_SYNC_CUTOVER_LABEL'] = \OnlineService\SyncTraceContext::CUTOVER_LABEL;
+
 $inboundTrace('site_requests_handler.dispatch.start', [
     'action' => (string)($requestPayload['ACTION'] ?? ''),
     'payload_keys' => array_keys($requestPayload),
@@ -779,15 +780,138 @@ if ($responseHttpStatus <= 0) {
     $responseHttpStatus = ((string)($response['error_code'] ?? '') === 'dispatch_failed') ? 500 : 200;
 }
 http_response_code($responseHttpStatus);
-$inboundTrace('site_requests_handler.dispatch.done', [
-    'action' => (string)($requestPayload['ACTION'] ?? ''),
+$responseJson = json_encode($response, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+$requestAction = (string)($requestPayload['ACTION'] ?? '');
+$dispatchDoneContext = [
+    'action' => $requestAction,
     'success' => isset($response['success']) ? (int)$response['success'] : null,
-    'error' => (string)($response['error'] ?? ''),
     'error_code' => (string)($response['error_code'] ?? ''),
+    'reason_code' => (string)($response['reason_code'] ?? ''),
     'http_status' => $responseHttpStatus,
     'response_keys' => is_array($response) ? array_keys($response) : [],
     'result_type' => isset($response['result']) ? gettype($response['result']) : null,
-]);
+    'response_body_bytes' => $responseJson === false ? null : strlen($responseJson),
+];
+if ($requestAction === 'CRM_METHOD') {
+    $dispatchDoneContext['crm_method'] = trim((string)($requestPayload['METHOD'] ?? ''));
+    $crmMethodName = $dispatchDoneContext['crm_method'];
+    $crmMethodParams = $methodParams;
+    if (is_string($crmMethodParams) && $crmMethodParams !== '') {
+        $decodedCrmMethodParams = json_decode($crmMethodParams, true);
+        $crmMethodParams = is_array($decodedCrmMethodParams) ? $decodedCrmMethodParams : null;
+    } elseif (!is_array($crmMethodParams)) {
+        $crmMethodParams = null;
+    }
+    if ($crmMethodName === 'crm.requisite.list' && is_array($crmMethodParams)) {
+        $crmFilter = isset($crmMethodParams['filter']) && is_array($crmMethodParams['filter']) ? $crmMethodParams['filter'] : [];
+        $dispatchDoneContext['has_rq_inn_filter'] = array_key_exists('RQ_INN', $crmFilter);
+    }
+    if ($crmMethodName === 'crm.company.add' && is_array($crmMethodParams)) {
+        $crmFields = isset($crmMethodParams['fields']) && is_array($crmMethodParams['fields']) ? $crmMethodParams['fields'] : [];
+        $dispatchDoneContext['has_rq_inn'] = array_key_exists('RQ_INN', $crmFields);
+    }
+    if (in_array($crmMethodName, ['crm.contact.company.add', 'crm.contact.update'], true) && is_array($crmMethodParams)) {
+        $rawContactId = $crmMethodParams['id'] ?? null;
+        $contactIdParam = null;
+        if (is_int($rawContactId) && $rawContactId > 0) {
+            $contactIdParam = $rawContactId;
+        } elseif (is_string($rawContactId) && $rawContactId !== '' && ctype_digit($rawContactId) && (int)$rawContactId > 0) {
+            $contactIdParam = (int)$rawContactId;
+        } elseif (is_numeric($rawContactId) && (int)$rawContactId > 0) {
+            $contactIdParam = (int)$rawContactId;
+        }
+        $dispatchDoneContext['contact_id_param'] = $contactIdParam;
+    }
+    if ($crmMethodName === 'crm.contact.company.add' && is_array($crmMethodParams)) {
+        $crmLinkFields = isset($crmMethodParams['fields']) && is_array($crmMethodParams['fields']) ? $crmMethodParams['fields'] : [];
+        $rawCompanyId = $crmLinkFields['COMPANY_ID'] ?? null;
+        $companyIdParam = null;
+        if (is_int($rawCompanyId) && $rawCompanyId > 0) {
+            $companyIdParam = $rawCompanyId;
+        } elseif (is_string($rawCompanyId) && $rawCompanyId !== '' && ctype_digit($rawCompanyId) && (int)$rawCompanyId > 0) {
+            $companyIdParam = (int)$rawCompanyId;
+        } elseif (is_numeric($rawCompanyId) && (int)$rawCompanyId > 0) {
+            $companyIdParam = (int)$rawCompanyId;
+        }
+        $dispatchDoneContext['company_id_param'] = $companyIdParam;
+    }
+    if ($crmMethodName === 'crm.contact.update' && is_array($crmMethodParams)) {
+        $inheritRaw = $crmMethodParams['inherit_from_company'] ?? null;
+        $inheritFromCompany = $inheritRaw === true
+            || $inheritRaw === 1
+            || $inheritRaw === '1'
+            || $inheritRaw === 'Y'
+            || $inheritRaw === 'y'
+            || (is_string($inheritRaw) && in_array(strtolower(trim($inheritRaw)), ['true', 'yes', 'on'], true));
+        $dispatchDoneContext['inherit_from_company'] = $inheritFromCompany;
+    }
+    if (isset($response['result'])) {
+        $resultVal = $response['result'];
+        if (\is_int($resultVal)) {
+            $dispatchDoneContext['result_int'] = $resultVal;
+        } elseif (\is_string($resultVal) && $resultVal !== '' && \ctype_digit($resultVal)) {
+            $dispatchDoneContext['result_int'] = (int)$resultVal;
+        } elseif (\is_numeric($resultVal)) {
+            $dispatchDoneContext['result_int'] = (int)$resultVal;
+        }
+    }
+    if ($crmMethodName === 'crm.contact.update') {
+        $responseData = isset($response['data']) && \is_array($response['data']) ? $response['data'] : [];
+        $contactInherited = !empty($responseData['contact_inherited'])
+            || (($response['reason_code'] ?? '') === 'contact_inherited_from_company');
+        $dispatchDoneContext['contact_inherited'] = $contactInherited;
+        $inheritReasonCode = (string)($response['reason_code'] ?? '');
+        if ($inheritReasonCode !== '') {
+            $dispatchDoneContext['inherit_reason_code'] = $inheritReasonCode;
+        }
+        $inheritBlock = isset($responseData['inherit']) && \is_array($responseData['inherit'])
+            ? $responseData['inherit']
+            : [];
+        $inheritLastError = (string)($inheritBlock['last_error'] ?? '');
+        if ($inheritLastError !== '') {
+            $dispatchDoneContext['inherit_last_error'] = \strlen($inheritLastError) > 200
+                ? \substr($inheritLastError, 0, 200)
+                : $inheritLastError;
+        }
+        $evidence = isset($responseData['evidence']) && \is_array($responseData['evidence'])
+            ? $responseData['evidence']
+            : [];
+        $copiedFields = isset($evidence['copied_fields']) && \is_array($evidence['copied_fields'])
+            ? $evidence['copied_fields']
+            : [];
+        if ($copiedFields === [] && isset($inheritBlock['copied_fields']) && \is_array($inheritBlock['copied_fields'])) {
+            $copiedFields = $inheritBlock['copied_fields'];
+        }
+        $dispatchDoneContext['copied_fields_count'] = \count($copiedFields);
+        $updateContactOutbound = isset($responseData['update_contact_outbound']) && \is_array($responseData['update_contact_outbound'])
+            ? $responseData['update_contact_outbound']
+            : [];
+        $updateContactOutboundOk = false;
+        if ($updateContactOutbound !== []) {
+            if (\array_key_exists('ok', $updateContactOutbound)) {
+                $updateContactOutboundOk = (bool)$updateContactOutbound['ok'];
+            } else {
+                $updateContactOutboundOk = (int)($updateContactOutbound['success'] ?? 0) === 1;
+            }
+        }
+        $updateContactReasonCode = (string)($updateContactOutbound['reason_code'] ?? '');
+        $dispatchDoneContext['update_contact_outbound_ok'] = $updateContactOutboundOk;
+        $dispatchDoneContext['update_contact_reason_code'] = $updateContactReasonCode;
+        if (!empty($dispatchDoneContext['inherit_from_company'])) {
+            $inboundTrace('site_requests_handler.registration.update_contact_outbound', [
+                'contact_id' => $dispatchDoneContext['contact_id_param'] ?? null,
+                'inherit_reason_code' => $inheritReasonCode,
+                'copied_fields_count' => $dispatchDoneContext['copied_fields_count'] ?? 0,
+                'update_contact_outbound_ok' => $updateContactOutboundOk,
+                'update_contact_reason_code' => $updateContactReasonCode,
+            ]);
+        }
+    }
+}
+if (isset($response['success']) && (int)$response['success'] === 0) {
+    $dispatchDoneContext['error_truncated'] = $truncateLogString((string)($response['error'] ?? ''), 300);
+}
+$inboundTrace('site_requests_handler.dispatch.done', $dispatchDoneContext);
 
 if ($diagCompanyId > 0 && $diagHasRequisitesUf && class_exists('CCrmCompany')) {
     $ufFieldId = 0;
@@ -945,5 +1069,19 @@ if ($diagCompanyId > 0 && $diagHasRequisitesUf && class_exists('CCrmCompany')) {
 }
 
 header('Content-Type: application/json; charset=utf-8');
-echo json_encode($response, JSON_UNESCAPED_UNICODE);
+if ($responseJson === false) {
+    $encodeError = json_last_error_msg();
+    http_response_code(500);
+    $inboundTrace('site_requests_handler.response.encode_failed', [
+        'action' => $requestAction,
+        'json_error' => $encodeError,
+    ]);
+    echo json_encode([
+        'success' => 0,
+        'reason_code' => 'response_encode_failed',
+        'error' => $encodeError,
+    ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+} else {
+    echo $responseJson;
+}
   
