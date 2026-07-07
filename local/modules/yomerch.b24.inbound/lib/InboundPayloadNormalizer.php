@@ -76,6 +76,7 @@ class InboundPayloadNormalizer
             'success' => 0,
             'error' => 'sync_internal_error',
             'error_code' => 'dispatch_failed',
+            'reason_code' => 'dispatch_failed',
             'http_status' => 500,
             'error_class' => get_class($e),
         ], $trace);

@@ -1,5 +1,21 @@
 <?php
 $arUrlRewrite=array (
+  217 => 
+  array (
+    'CONDITION' => '#^/pub/annuals/([0-9a-zA-Z~]+)/#',
+    'RULE' => 'shortCode=$1',
+    'ID' => NULL,
+    'PATH' => '/pub/annual_summary.php',
+    'SORT' => 50,
+  ),
+  218 => 
+  array (
+    'CONDITION' => '#^/pub/annual_summary/([0-9a-z\\.]+)/([0-9a-z\\.\\_]+)/\\?user_lang=[a-z]+#',
+    'RULE' => 'signedId=$1&signedType=$2',
+    'ID' => NULL,
+    'PATH' => '/pub/annual_summary.php',
+    'SORT' => 60,
+  ),
   170 => 
   array (
     'CONDITION' => '#^/extranet/pub/calendar-event/([0-9]+)/([0-9a-zA-Z]+)/?([^/]*)#',
@@ -40,6 +56,14 @@ $arUrlRewrite=array (
     'PATH' => '/pub/calendar_event.php',
     'SORT' => 100,
   ),
+  213 => 
+  array (
+    'CONDITION' => '#^/disk/file/(?<unique_code>[0-9a-zA-Z]{20})/edit(\\/?)#',
+    'RULE' => 'action=disk.api.unifiedlinkcontroller.edit&uniqueCode=$1&',
+    'ID' => NULL,
+    'PATH' => '/bitrix/services/main/ajax.php',
+    'SORT' => 100,
+  ),
   6 => 
   array (
     'CONDITION' => '#^/disk/(?<action>[0-9a-zA-Z]+)/(?<fileId>[0-9]+)/\\?#',
@@ -62,6 +86,14 @@ $arUrlRewrite=array (
     'RULE' => 'ACTION=$1&',
     'ID' => 'bitrix:timeman.worktime',
     'PATH' => '/timeman/worktime.php',
+    'SORT' => 100,
+  ),
+  214 => 
+  array (
+    'CONDITION' => '#^/disk/file/(?<unique_code>[0-9a-zA-Z]{20})(\\/?)#',
+    'RULE' => 'action=disk.api.unifiedlinkcontroller.view&uniqueCode=$1&',
+    'ID' => NULL,
+    'PATH' => '/bitrix/services/main/ajax.php',
     'SORT' => 100,
   ),
   179 => 
@@ -168,12 +200,12 @@ $arUrlRewrite=array (
     'PATH' => '/extranet/crm/configs/deal_category/index.php',
     'SORT' => 100,
   ),
-  159 => 
+  221 => 
   array (
     'CONDITION' => '#^/video/([\\.\\-0-9a-zA-Z]+)(/?)([^/]*)#',
     'RULE' => 'alias=$1&videoconf',
-    'ID' => 'bitrix:im.router',
-    'PATH' => '/desktop_app/router.php',
+    'ID' => 'call:conference',
+    'PATH' => '/conference/videoconf.php',
     'SORT' => 100,
   ),
   96 => 
@@ -624,14 +656,6 @@ $arUrlRewrite=array (
     'PATH' => '/marketing/config/role.php',
     'SORT' => 100,
   ),
-  171 => 
-  array (
-    'CONDITION' => '#^/shop/import/instagram/#',
-    'RULE' => '',
-    'ID' => 'bitrix:crm.order.import.instagram',
-    'PATH' => '/shop/import/instagram/index.php',
-    'SORT' => 100,
-  ),
   176 => 
   array (
     'CONDITION' => '#^/shop/documents-stores/#',
@@ -654,6 +678,14 @@ $arUrlRewrite=array (
     'RULE' => NULL,
     'ID' => 'bitrix:mobile.webdav.file.list',
     'PATH' => '/extranet/mobile/webdav/index.php',
+    'SORT' => 100,
+  ),
+  215 => 
+  array (
+    'CONDITION' => '#^/task/comments/([0-9]+)#',
+    'RULE' => 'taskId=$1',
+    'ID' => NULL,
+    'PATH' => '/tasks/comments.php',
     'SORT' => 100,
   ),
   117 => 
@@ -1224,6 +1256,14 @@ $arUrlRewrite=array (
     'PATH' => '/bi/dashboard/index.php',
     'SORT' => 100,
   ),
+  220 => 
+  array (
+    'CONDITION' => '#^/desktop/menu/#',
+    'RULE' => '',
+    'ID' => 'bitrix:intranet.menu',
+    'PATH' => '/desktop_menu/index.php',
+    'SORT' => 100,
+  ),
   48 => 
   array (
     'CONDITION' => '#^/crm/contact/#',
@@ -1368,14 +1408,6 @@ $arUrlRewrite=array (
     'PATH' => '/shop/buyer/index.php',
     'SORT' => 100,
   ),
-  202 => 
-  array (
-    'CONDITION' => '#^/bi/dataset/#',
-    'RULE' => '',
-    'ID' => 'bitrix:biconnector.apachesuperset.workspace_analytic.controller',
-    'PATH' => '/bi/dataset/index.php',
-    'SORT' => 100,
-  ),
   51 => 
   array (
     'CONDITION' => '#^/crm/quote/#',
@@ -1406,14 +1438,6 @@ $arUrlRewrite=array (
     'RULE' => '',
     'ID' => 'bitrix:biconnector.apachesuperset.workspace_analytic.controller',
     'PATH' => '/bi/source/index.php',
-    'SORT' => 100,
-  ),
-  205 => 
-  array (
-    'CONDITION' => '#^/vibe/edit/#',
-    'RULE' => '',
-    'ID' => 'bitrix:landing.start',
-    'PATH' => '/vibe/edit/index.php',
     'SORT' => 100,
   ),
   174 => 
@@ -1480,6 +1504,14 @@ $arUrlRewrite=array (
     'PATH' => '/docs/index.php',
     'SORT' => 100,
   ),
+  216 => 
+  array (
+    'CONDITION' => '#^vibe/edit/#',
+    'RULE' => '',
+    'ID' => 'bitrix:landing.start',
+    'PATH' => 'vibe/edit/index.php',
+    'SORT' => 100,
+  ),
   197 => 
   array (
     'CONDITION' => '#^/booking/#',
@@ -1494,14 +1526,6 @@ $arUrlRewrite=array (
     'RULE' => '',
     'ID' => 'bitrix:market',
     'PATH' => '/market/index.php',
-    'SORT' => 100,
-  ),
-  132 => 
-  array (
-    'CONDITION' => '#^/crm/ml/#',
-    'RULE' => NULL,
-    'ID' => NULL,
-    'PATH' => '/crm/ml/index.php',
     'SORT' => 100,
   ),
   161 => 

@@ -148,6 +148,18 @@ if ($syncSettingsLocalOk && \is_array($cfg ?? null) && \array_key_exists('sync_t
 }
 $yomerrch24B24SiteSync['sync_token'] = $syncTokenFromLocal;
 
+// CRM→site: секрет для POST на endpoint.php сайта (= inbound_secret в config.local.php на yomerch.ru).
+$siteOutboundToken = $syncTokenFromLocal;
+if ($syncSettingsLocalOk && \is_array($cfg ?? null)) {
+    foreach (['site_inbound_secret', 'inbound_secret'] as $outboundSecretKey) {
+        if (!empty($cfg[$outboundSecretKey]) && \is_scalar($cfg[$outboundSecretKey])) {
+            $siteOutboundToken = (string)$cfg[$outboundSecretKey];
+            break;
+        }
+    }
+}
+$yomerrch24B24SiteSync['site_outbound_token'] = $siteOutboundToken;
+
 /**
  * Авторитетно для OutboundRequest::isSiteSync* (обход уже объявленных констант).
  * sync_debug без sync_trace: раньше не писался b24-to-site-sync.log — теперь debug тянет за собой trace в файл.
@@ -181,6 +193,9 @@ if (!\defined('YOMERRCH24_SITE_URL')) {
 }
 if (!\defined('YOMERRCH24_SITE_SYNC_TOKEN')) {
     \define('YOMERRCH24_SITE_SYNC_TOKEN', (string)($yomerrch24B24SiteSync['sync_token'] ?? ''));
+}
+if (!\defined('YOMERRCH24_SITE_OUTBOUND_TOKEN')) {
+    \define('YOMERRCH24_SITE_OUTBOUND_TOKEN', (string)($yomerrch24B24SiteSync['site_outbound_token'] ?? ''));
 }
 if (!\defined('YOMERRCH24_SITE_SYNC_DEBUG')) {
     \define('YOMERRCH24_SITE_SYNC_DEBUG', (bool)($GLOBALS['YOMERRCH24_B24_SITE_SYNC']['sync_debug'] ?? false));

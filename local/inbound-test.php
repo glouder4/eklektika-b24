@@ -15,6 +15,7 @@
  *      (переменная окружения `INBOUND_TEST_BASE_URL` если URL не передан после флага).
  *
  * Не выводит значения sync_token / секретов — только длины и флаги.
+ * Не проверяет json_encode ответа endpoint (`response_encode_failed`) — только окружение и запись в log.
  */
 
 use OnlineService\Sync\FromSite\InboundSecurity;
