@@ -29,4 +29,5 @@ define("BX_FILE_PERMISSIONS", 0664);
 define("BX_DIR_PERMISSIONS", 0775);
 //@umask(~BX_DIR_PERMISSIONS);
 define("BX_DISABLE_INDEX_PAGE", true);
+
 ?>
