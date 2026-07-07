@@ -47,10 +47,10 @@ final class CompanyPhoneUfMultifieldSync
     /**
      * После сохранения: если в БД UF и PHONE[] всё ещё расходятся — дописать в CRM (без повторного outbound).
      */
-    public static function syncStoredCompanyIfNeeded(int $companyId): void
+    public static function syncStoredCompanyIfNeeded(int $companyId): bool
     {
         if ($companyId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
-            return;
+            return false;
         }
 
         $ufWork = UfMap::get('company.legan_main_phone');
@@ -59,7 +59,7 @@ final class CompanyPhoneUfMultifieldSync
         $read = new CompanySyncReadService();
         $snapshot = $read->loadCompanySnapshot($companyId);
         if ($snapshot === []) {
-            return;
+            return false;
         }
 
         [$work, $mobile] = self::resolveCanonical($snapshot, [], $ufWork, $ufMobile);
@@ -85,15 +85,23 @@ final class CompanyPhoneUfMultifieldSync
         }
 
         if ($fields === []) {
-            return;
+            return false;
         }
 
-        if (\class_exists(\OnlineService\Sync\ToSite\CompanySync::class)) {
-            \OnlineService\Sync\ToSite\CompanySync::markInboundCompanyUpdate($companyId);
+        $suspend = \class_exists(\OnlineService\Sync\ToSite\CompanySync::class);
+        if ($suspend) {
+            \OnlineService\Sync\ToSite\CompanySync::suspendOutbound(true);
+        }
+        try {
+            $entity = new \CCrmCompany(false);
+            $entity->Update($companyId, $fields);
+        } finally {
+            if ($suspend) {
+                \OnlineService\Sync\ToSite\CompanySync::suspendOutbound(false);
+            }
         }
 
-        $entity = new \CCrmCompany(false);
-        $entity->Update($companyId, $fields);
+        return true;
     }
 
     /**

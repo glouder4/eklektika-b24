@@ -24,7 +24,7 @@ class OutboundBase
 
         $trace = \OnlineService\SyncTraceContext::resolve($params);
         $queryUrl = YOMERRCH24_SITE_URL . '/local/modules/yomerch.b24.inbound/endpoint.php';
-        $retryCodes = [429, 503];
+        $retryCodes = [429];
         $retryDelaysUs = [1000000, 2000000, 4000000, 8000000];
         $attempts = count($retryDelaysUs) + 1;
         $result = '';

@@ -46,6 +46,9 @@ class CompanySync extends OutboundRequest
     /** Подавление onAfter* (inbound CRM_METHOD create и т.п.) без ID компании до Add. */
     private static bool $suspendOutbound = false;
 
+    /** Вложенность OnAfterCrmCompanyUpdate (syncStoredCompanyIfNeeded → CCrmCompany::Update). */
+    private static int $onAfterCompanyUpdateDepth = 0;
+
     public static function suspendOutbound(bool $state): void
     {
         self::$suspendOutbound = $state;
@@ -250,21 +253,78 @@ class CompanySync extends OutboundRequest
 
     public static function onAfterCompanyUpdate(&$arFields): bool
     {
+        self::$onAfterCompanyUpdateDepth++;
+        $isOuter = self::$onAfterCompanyUpdateDepth === 1;
+        try {
+            if ($isOuter) {
+                self::beginPerfScreenCollect();
+            }
+            $perfStartedAt = microtime(true);
+            $perfLastAt = $perfStartedAt;
+            $companyId = (int)($arFields['ID'] ?? 0);
+            $ufCompanyIsMarketingAgent = self::uf('company.is_marketing_agent');
+
+            $perfPhase = static function (string $phase) use (&$perfStartedAt, &$perfLastAt, $companyId): void {
+                $now = microtime(true);
+                self::writePerfTrace('CompanySync::perf.onAfterCompanyUpdate.phase', [
+                    'company_id' => $companyId,
+                    'phase' => $phase,
+                    'elapsed_ms' => (int)\round(($now - $perfStartedAt) * 1000),
+                    'delta_ms' => (int)\round(($now - $perfLastAt) * 1000),
+                ]);
+                $perfLastAt = $now;
+            };
+            $perfEnd = static function (string $outcome, array $extra = []) use (
+                &$perfStartedAt,
+                $companyId,
+                $isOuter
+            ): bool {
+                $now = microtime(true);
+                $endContext = \array_merge([
+                    'company_id' => $companyId,
+                    'outcome' => $outcome,
+                    'total_ms' => (int)\round(($now - $perfStartedAt) * 1000),
+                ], $extra);
+                self::writePerfTrace('CompanySync::perf.onAfterCompanyUpdate.end', $endContext);
+                if ($isOuter) {
+                    self::finishOsUserSyncDebugScreen($outcome, $endContext, true);
+                }
+
+                return true;
+            };
+
         if (self::$suspendOutbound) {
             self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate skip_suspend_outbound', [
-                'company_id' => (int)($arFields['ID'] ?? 0),
+                'company_id' => $companyId,
             ]);
 
-            return true;
+            return $perfEnd('skip_suspend_outbound');
         }
 
         if (!\Bitrix\Main\Loader::includeModule('crm')) {
-            return true;
+            return $perfEnd('bail_no_crm_module');
         }
 
         \Bitrix\Crm\Settings\CompanySettings::getCurrent()->setFactoryEnabled(true);
 
-        $companyId = (int)($arFields['ID'] ?? 0);
+        $arFieldsUfKeys = [];
+        if (\is_array($arFields)) {
+            foreach (\array_keys($arFields) as $k) {
+                if (\is_string($k) && \strncmp($k, 'UF_', 3) === 0) {
+                    $arFieldsUfKeys[] = $k;
+                }
+            }
+        }
+        self::writePerfTrace('CompanySync::perf.onAfterCompanyUpdate.start', [
+            'company_id' => $companyId,
+            'marketing_agent_uf' => $ufCompanyIsMarketingAgent,
+            'marketing_agent_changed' => \is_array($arFields) && \array_key_exists($ufCompanyIsMarketingAgent, $arFields),
+            'arFields_uf_keys' => $arFieldsUfKeys,
+        ]);
+        if (self::isOsUserSyncDebugEnabled() && \function_exists('pre')) {
+            \pre('=== CompanySync::onAfterCompanyUpdate START (os_usersync_debug=1) ===');
+        }
+
         self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate', [
             'company_id' => $companyId,
             'arFields_keys_sample' => \array_slice(\array_keys($arFields), 0, 25),
@@ -272,14 +332,23 @@ class CompanySync extends OutboundRequest
         if ($companyId <= 0) {
             self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate bail_no_id', []);
 
-            return true;
+            return $perfEnd('bail_no_id');
         }
         if (self::shouldSkipOutbound($companyId)) {
             self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate skip_outbound_once', [
                 'company_id' => $companyId,
             ]);
 
-            return true;
+            return $perfEnd('skip_outbound_once');
+        }
+
+        if (self::$onAfterCompanyUpdateDepth > 1) {
+            self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate skip_nested_depth', [
+                'company_id' => $companyId,
+                'depth' => self::$onAfterCompanyUpdateDepth,
+            ]);
+
+            return $perfEnd('skip_nested_depth');
         }
 
         $readService = new CompanySyncReadService();
@@ -289,13 +358,20 @@ class CompanySync extends OutboundRequest
                 'company_id' => $companyId,
             ]);
 
-            return true;
+            return $perfEnd('bail_no_company_row');
         }
 
-        CompanyPhoneUfMultifieldSync::syncStoredCompanyIfNeeded($companyId);
+        $syncStoredDidUpdate = CompanyPhoneUfMultifieldSync::syncStoredCompanyIfNeeded($companyId);
         $company = $readService->loadCompanySnapshot($companyId);
         if (!$company) {
-            return true;
+            return $perfEnd('bail_no_company_row_after_phone_sync');
+        }
+        if ($syncStoredDidUpdate && self::shouldSkipOutboundAfterSyncStoredCorrection($arFields)) {
+            self::writeOutboundTrace('CompanySync::onAfterCompanyUpdate skip_outbound_sync_stored_only', [
+                'company_id' => $companyId,
+            ]);
+
+            return $perfEnd('skip_outbound_sync_stored_only');
         }
 
         self::writeOutboundTrace('CompanySync::phaseA_read_snapshot', [
@@ -303,6 +379,7 @@ class CompanySync extends OutboundRequest
             'has_rq_inn' => !empty($company['REQUISITES']['RQ_INN']),
             'has_multifields' => !empty($company['MULTIFIELDS']),
         ]);
+        $perfPhase('read_snapshot');
 
         $ufCompanyIsHead = self::uf(self::UF_COMPANY_IS_HEAD);
         $ufCompanyHolding = self::uf(self::UF_COMPANY_HOLDING);
@@ -364,6 +441,7 @@ class CompanySync extends OutboundRequest
             $discountValue = (string)($arFields[$ufCompanyDiscount] ?? $company[$ufCompanyDiscount] ?? '');
             self::propagateHeadDiscountToChildrenAndContacts($companyId, $discountValue);
         }
+        $perfPhase('holding_and_discount');
 
         $companyUsers = $arFields['CONTACT_BINDINGS'] ?? [];
         if (!is_array($companyUsers) || empty($companyUsers)) {
@@ -374,7 +452,6 @@ class CompanySync extends OutboundRequest
         }, $companyUsers))) : [];
         $contactIds = array_values(array_unique($contactIds));
 
-        $ufCompanyIsMarketingAgent = self::uf('company.is_marketing_agent');
         $ufCompanyRequisitesFile = self::uf('company.requisites_file');
         $ufCompanySiteElementId = self::uf('company.site_element_id');
         $ufCompanySiteElementIdLegacy = self::uf('company.site_element_id_legacy_alias');
@@ -395,6 +472,8 @@ class CompanySync extends OutboundRequest
             $company,
             $ufCompanyIsMarketingAgent
         );
+        $isMarketingAgent = OutboundContactMarketingForSite::isMarketingAgentTruthy($isMarketingAgentRaw);
+        $contactMarketingAgentForCrm = self::normalizeCompanyUfMirrorForContactUpdate($isMarketingAgentRaw);
         //$companyStatusId = $arFields['company.status'] ?? null;
         $reqFileId = (int)($arFields[$ufCompanyRequisitesFile] ?? 0);
         $fileInfo = $reqFileId > 0 ? \CFile::GetFileArray($reqFileId) : null;
@@ -473,8 +552,8 @@ class CompanySync extends OutboundRequest
                 $ufCompanyHoldingCompanies => $holdingCompaniesBindingPayload === [] ? false : $holdingCompaniesBindingPayload,
                 'OS_COMPANY_PHONE' => $phone,
                 'OS_COMPANY_EMAIL' => $email,
-                'OS_IS_MARKETING_AGENT' => ['VALUE' => self::isTruthy($isMarketingAgentRaw) ? 2076 : false],
-                'ACTIVE' => self::isTruthy($isMarketingAgentRaw) ? 'Y' : 'N',
+                'OS_IS_MARKETING_AGENT' => ['VALUE' => $isMarketingAgent ? 2076 : false],
+                'ACTIVE' => $isMarketingAgent ? 'Y' : 'N',
             ],
             $leganPhones
         );
@@ -502,6 +581,20 @@ class CompanySync extends OutboundRequest
             'title_len' => \strlen($title),
             'inn_len' => \strlen($inn),
         ]);
+        if (self::isOsUserSyncDebugEnabled()) {
+            self::writePerfTrace('CompanySync::perf.UPDATE_COMPANY.payload_built', [
+                'company_id' => $companyId,
+                'OS_COMPANY_NAME' => $title,
+                'OS_COMPANY_INN' => $inn,
+                'site_element_id' => $siteElementId,
+                'contact_ids_count' => \count($companySiteUserIds),
+                'marketing_agent_raw' => $isMarketingAgentRaw,
+                'is_marketing_agent' => $isMarketingAgent,
+                'contact_uf_written' => $contactMarketingAgentForCrm,
+                'payload_preview' => self::buildPerfOutboundPayloadPreview($params),
+            ]);
+        }
+        $perfPhase('build_update_company_payload');
 
         // Сначала UPDATE_COMPANY, затем правки контактов без исходящих событий, затем явный UPDATE_CONTACT.
         // Иначе при sync_debug первый UPDATE_CONTACT обрывает выполнение до UPDATE_COMPANY.
@@ -540,12 +633,13 @@ class CompanySync extends OutboundRequest
                 );
             }
         }
+        $perfPhase('update_company_http');
 
         try {
             foreach ($contactIds as $contactId) {
                 $contactFields = [
-                    self::uf('company.contact_marketing_agent') => $isMarketingAgentRaw,
-                    self::uf('contact.inherits_company_is_marketing_agent') => $isMarketingAgentRaw,
+                    self::uf('company.contact_marketing_agent') => $contactMarketingAgentForCrm,
+                    self::uf('contact.inherits_company_is_marketing_agent') => $isMarketingAgent ? 'Y' : 'N',
                     'ASSIGNED_BY_ID' => $companyAssignedForContacts,
                     $ufContactSiteSync => $companySiteSyncForContacts,
                 ];
@@ -570,14 +664,36 @@ class CompanySync extends OutboundRequest
         } finally {
             ContactSync::suspendOutbound(false);
         }
+        $perfPhase('contacts_crm_update');
 
         foreach ($contactIds as $contactId) {
             if ($contactId > 0) {
                 ContactSync::sendContactToSiteNow($contactId);
             }
         }
+        $perfPhase('contacts_outbound_update_contact');
 
-        return true;
+        if ($isOuter) {
+            self::dumpPerfScreenBuffer();
+            if (self::isOsUserSyncDebugEnabled() && \function_exists('pre')) {
+                \pre([
+                    'company_id' => $companyId,
+                    'outcome' => 'complete',
+                    'total_ms' => (int)\round((microtime(true) - $perfStartedAt) * 1000),
+                    'contacts_count' => \count($contactIds),
+                    'os_usersync_debug' => true,
+                ]);
+            }
+        }
+
+        return $perfEnd('complete', [
+            'contacts_count' => \count($contactIds),
+            'has_site_element_id' => $siteElementId !== '',
+            'is_marketing_agent' => $isMarketingAgent,
+        ]);
+        } finally {
+            self::$onAfterCompanyUpdateDepth--;
+        }
     }
 
     /**
@@ -615,6 +731,9 @@ class CompanySync extends OutboundRequest
         $result = $sync->sendRequest([
             'ACTION' => 'DELETE_COMPANY',
             'ID' => $companyId,
+            // Fail-open + keep CRM UX snappy: OnBeforeCrmCompanyDelete must not block on flaky network.
+            '_OUTBOUND_TIMEOUT_SEC' => 8,
+            '_OUTBOUND_MAX_ATTEMPTS' => 1,
         ], false);
 
         if ((int)($result['success'] ?? 0) === 1 && empty($result['error'])) {
@@ -2240,5 +2359,28 @@ class CompanySync extends OutboundRequest
     private static function isTruthy($value): bool
     {
         return $value === 'Y' || $value === true || $value === 1 || $value === '1';
+    }
+
+    /**
+     * После syncStoredCompanyIfNeeded: не слать полный outbound, если в $arFields только телефоны.
+     * Если Bitrix передал десятки UF-ключей — возвращаем false (безопасный fallback).
+     *
+     * @param array<string, mixed> $arFields
+     */
+    private static function shouldSkipOutboundAfterSyncStoredCorrection(array $arFields): bool
+    {
+        $phoneUfs = [
+            self::uf('company.legan_main_phone'),
+            self::uf('company.legan_mobile_phone'),
+        ];
+        $allowed = ['ID', 'PHONE', ...$phoneUfs];
+        $allowedMap = \array_fill_keys($allowed, true);
+        foreach (\array_keys($arFields) as $key) {
+            if (!\is_string($key) || !isset($allowedMap[$key])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
