@@ -66,6 +66,35 @@ Pass criteria:
 - JSON `success=1`
 - `result` has expected shape for requested CRM method
 
+### 3.1) Inbound positive: CRM_METHOD `crm.contact.add` (registration minimal fields)
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  -H "X-Sync-Trace-ID: R5-INB-CRM-CONTACT-ADD-001" \
+  --data '{"ACTION":"CRM_METHOD","METHOD":"crm.contact.add","PARAMS":{"fields":{"NAME":"R5","LAST_NAME":"Smoke Contact","PHONE":[{"VALUE":"+70000000001","VALUE_TYPE":"WORK"}],"EMAIL":[{"VALUE":"r5-smoke-contact@example.test","VALUE_TYPE":"WORK"}]}}}'
+```
+Pass criteria:
+- HTTP 200
+- JSON `success=1`, `result` is positive integer (new contact CRM ID)
+- `local/logs/inbound-b24.log` contains `site_requests_handler.dispatch.done` with `crm_method=crm.contact.add`, `result_int`, `response_body_bytes`, same trace id
+
+### 3.2) Inbound positive: CRM_METHOD `crm.company.add` (registration minimal fields)
+```bash
+curl -i -X POST "https://<B24_HOST>/local/modules/yomerch.b24.inbound/endpoint.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Sync-Token: <SYNC_TOKEN>" \
+  -H "X-Sync-Trace-ID: R5-INB-CRM-COMPANY-ADD-001" \
+  --data '{"ACTION":"CRM_METHOD","METHOD":"crm.company.add","PARAMS":{"fields":{"TITLE":"R5 Smoke Company","UF_CRM_1756112106093":"876","UF_CRM_1774915439581":999001,"UF_CRM_3804624439373":999001}}}'
+```
+Pass criteria:
+- HTTP 200
+- JSON `success=1`, `result` is positive integer (new or dedup-matched company CRM ID)
+- При dedup по ИНН допустимы `reason_code` `company_add_use_existing_for_contact` / `company_add_child_under_head_inn` — **`result` всё равно int**
+- `local/logs/inbound-b24.log`: `site_requests_handler.dispatch.done` with `crm_method=crm.company.add`, `result_int`, `reason_code` (если есть), same trace id
+
+**Примечание:** полный smoke регистрации юрлица = `createCompanyElement` на сайте + inbound chain (`crm.company.add` → contact chain) — **`createCompanyElement` вне этого репо**. Негатив: `site_element_id=0` → `success=0`, `reason_code=company_add_invalid_site_element_id`.
+
 ### 4) Inbound negative contract checks
 Unknown action:
 ```bash

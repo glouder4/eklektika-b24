@@ -13,7 +13,9 @@
 ## Решение
 
 1. **`uf_mapping.php`**: `company.is_marketing_agent` → **`UF_CRM_1675675211485`**.
-2. **`CompanySync::onAfterCompanyUpdate`**: скаляр для маркетингового UF берётся через **`extractCompanyUfScalarForOutbound`** (приоритет `$arFields`, развёртка `VALUE`), одно и то же значение используется для **`OS_IS_MARKETING_AGENT`**, **`ACTIVE`** и пропагации на контакты (`company.contact_marketing_agent`).
+2. **`CompanySync::onAfterCompanyUpdate`**: скаляр через **`extractCompanyUfScalarForOutbound`**; для сайта — **`isMarketingAgentTruthy`** → **`OS_IS_MARKETING_AGENT`** / **`ACTIVE`**. На контакт **`company.contact_marketing_agent`** (`UF_CRM_1775034008956`) пишется **тот же скаляр/enum ID**, что на компании (`normalizeCompanyUfMirrorForContactUpdate`), без подстановки enum «да» списка контакта. **`contact.inherits_company_is_marketing_agent`** — Y/N (см. ADR R24).
+
+3. **Perf (2026-05):** если в `$arFields` изменён **только** UF «Рекламный агент» — fast-path (минимальный outbound). Отладка фаз: **`?os_usersync_debug=1`** в URL карточки компании → `pre()` на экран и **`die()`** в конце `onAfterCompanyUpdate` (без `b24-sync-perf.log`). При debug outbound не откладывается в shutdown.
 
 ## Риски
 

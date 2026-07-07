@@ -8,7 +8,7 @@
 
 ## Осталось (при необходимости)
 
-- [ ] R13-04 — Если **`UF_CRM_1675675211485`** — enum: задокументировать значения и при необходимости заменить **`isTruthy`** на маппинг ID варианта → `Y`/`N` и флаг для `OS_IS_MARKETING_AGENT`.
+- [x] R13-04 — Enum компании: **`OutboundContactMarketingForSite::isMarketingAgentTruthy`** (Y/1, enum «да», ID **2076** для `OS_IS_MARKETING_AGENT`); при пропагации на контакт — **`resolveMarketingAgentValueForContactUf`** (enum «да» контакта или `Y`). Fallback **`UF_ADVERTISING_AGENT`** в `ContactSync` при `ACTIVE=Y` / `IS_MARKETING_AGENT=Y`.
 
 ## Проверка
 

@@ -6,12 +6,18 @@
 
 ## Контекст
 
-У компании в CRM UF **`UF_CRM_1675675211485`** (`company.is_marketing_agent`). У контакта в CRM должен дублироваться смысл в **`UF_CRM_1698752707853`** для всех контактов, связанных с компанией. Речь о **событии внутри CRM** (сохранение компании), а не о входящем `UPDATE_COMPANY` с сайта.
+У компании в CRM UF **`UF_CRM_1675675211485`** (`company.is_marketing_agent`). У привязанных контактов при сохранении компании в CRM:
+
+- **`UF_CRM_1775034008956`** (`company.contact_marketing_agent`) — **прямая копия** скаляра/enum ID компании (например **2076** → **2076**), через `normalizeCompanyUfMirrorForContactUpdate($isMarketingAgentRaw)`; без подстановки enum «да» списка контакта.
+- **`UF_CRM_1698752707853`** (`contact.inherits_company_is_marketing_agent`) — **Y/N** по `isMarketingAgentTruthy` (для `ACTIVE` на сайте в `ContactSync`); сырой enum компании сюда не пишется.
+
+Речь о **событии внутри CRM** (сохранение компании), а не о входящем `UPDATE_COMPANY` с сайта.
 
 ## Решение
 
-- В **`uf_mapping.php`**: ключ **`contact.inherits_company_is_marketing_agent`** → **`UF_CRM_1698752707853`**.
-- **Исходящий контур CRM → сайт + побочные обновления CRM**: в **`CompanySync::onAfterCompanyUpdate`** в тот же цикл обновления привязанных контактов, что и **`company.contact_marketing_agent`**, добавлено поле **`contact.inherits_company_is_marketing_agent`** с тем же сырьём **`$isMarketingAgentRaw`** (значение с UF компании **`company.is_marketing_agent`**).
+- В **`uf_mapping.php`**: **`company.contact_marketing_agent`** → **`UF_CRM_1775034008956`**; **`contact.inherits_company_is_marketing_agent`** → **`UF_CRM_1698752707853`**.
+- **`CompanySync::onAfterCompanyUpdate`**: в цикле `CCrmContact::Update` для привязанных контактов — `company.contact_marketing_agent` = зеркало UF компании; `contact.inherits_company_is_marketing_agent` = `Y`/`N`.
+- Outbound на сайт: **`isMarketingAgentTruthy`** → `OS_IS_MARKETING_AGENT` / `ACTIVE`; **`UF_ADVERTISING_AGENT`** в `ContactSync` (в т.ч. fallback при `ACTIVE=Y`) — без изменения в рамках R24.
 
 Входящий **`UPDATE_COMPANY`** (`InboundEndpoint`) **не** дублирует эту логику: он обновляет поля компании по контракту сайта; наследование UF на контакты — зона ответственности CRM-события выше.
 

@@ -9,9 +9,16 @@
  */
 return [
     'site_url' => 'https://example.com',
-    // Source-of-truth для секрета входящего канала; синоним контракта сайта (тот же секрет):
-    // 'inbound_secret' => '',
+    // Секрет сайт→B24 (inbound на портале CRM):
     'sync_token' => '',
+    // Cooldown (сек) между успешными POST (HTTP 200) для одной сущности (ACTION+ID). 0 = выкл (по умолчанию).
+    // Включайте только при шторме 503; static в PHP-FPM «залипает» между запросами воркера.
+    // 'outbound_circuit_cooldown_sec' => 45,
+
+    // Секрет CRM→сайт (POST на endpoint.php yomerch.ru = inbound_secret в config.local.php сайта).
+    // Если не задан — используется sync_token (часто неверно: на сайте другой ключ).
+    // 'inbound_secret' => '',
+    // 'site_inbound_secret' => '',
     'sync_debug' => false,
     'sync_trace' => false,
 

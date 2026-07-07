@@ -57,8 +57,9 @@
 
 1. **Считать Tier-0 source-of-truth** для “создание контакта + привязка к компании” — inbound `CRM_METHOD` в `InboundEndpoint.php` (уже реализованы: `crm.contact.add`, `crm.company.add`, `crm.contact.company.add`).
 2. **Perf регистрации (2026-05):** при inbound `crm.company.add` — `CompanySync::suspendOutbound` на время `Add`; при `crm.contact.add`/`update` — без синхронного `sendContactToSiteNow` (ADR R26). Inbound не блокируется outbound CURL к сайту.
-3. **Параллельно** проверить отсутствие/наличие подписок на события регистрации `main` в `local/php_interface/init.php` и всех модулях `local/modules/**/include.php|init.php|bootstrap.php`.
-4. Если бизнес-требование строго “после регистрации пользователя сайта в B24” (а не “после регистрации на сайте”), то:
+3. **Регистрация юрлица/агента (2026-05, дополнение):** помимо CRM `crm.company.add` → `crm.contact.add` → `crm.contact.company.add`, на **сайте** обязателен `createCompanyElement` (или аналог) с **`OS_COMPANY_B24_ID`** = CRM ID компании. Inbound CRM **не** знает об успехе этого шага; при `createCompanyElement` → false сайт блокирует регистрацию даже если `crm.company.add` успешен. Инвариант: пара `(company_id, site_element_id)` + `OS_COMPANY_B24_ID` на элементе. Допустимы варианты A (элемент до add) и B (add → элемент → update UF). Детали — `CRM_TEAM_RESPONSE_REGISTRATION_SYNC.md`, `actions/CRM_METHOD.md`.
+4. **Параллельно** проверить отсутствие/наличие подписок на события регистрации `main` в `local/php_interface/init.php` и всех модулях `local/modules/**/include.php|init.php|bootstrap.php`.
+5. Если бизнес-требование строго “после регистрации пользователя сайта в B24” (а не “после регистрации на сайте”), то:
    - либо добавлять подписку на `OnAfterUserRegister`/`OnAfterUserAdd` в `yomerch.b24.siteconnector` (и явно документировать побочные эффекты),
    - либо оставлять регистрационный flow на сайте и просто формализовать контракт inbound последовательности методов.
 
